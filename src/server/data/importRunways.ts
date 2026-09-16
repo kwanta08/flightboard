@@ -60,6 +60,18 @@ const HEADING_TOLERANCE_DEG = 1;
 /** 対向端どうしの距離と公示滑走路長のずれがこれを超えたら「既知の不一致」に記録する（比。AC-P2-03） */
 export const LENGTH_TOLERANCE = 0.1;
 
+/**
+ * 指示子（磁方位）と座標から計算した真方位の食い違いの許容（度。AC-P2-02）。
+ * 既知の不一致の説明を「中心線に沿ったずれ」と書いてよいかの分かれ目にだけ使う。
+ */
+const IDENT_TOLERANCE_DEG = 7;
+
+/** docs/spec.md §10.2 の採点（採点 = 方位のズレ + 距離km × 0.3）で距離に掛かる係数（点/km） */
+const SCORE_PER_KM = 0.3;
+
+/** docs/spec.md §10.2 の許容ズレ（20° − 距離km × 0.4）で距離に掛かる係数（度/km） */
+const TOLERANCE_DEG_PER_KM = 0.4;
+
 /** `closed` 列が閉鎖を表す値（列が無ければ「閉鎖でない」とみなす） */
 const CLOSED_VALUES = new Set(["1", "true", "yes"]);
 
@@ -326,6 +338,21 @@ function renderMismatchHeader(mismatches: readonly LengthMismatch[]): string {
   const maxShiftKm = Math.max(
     ...mismatches.map((mismatch) => Math.abs(mismatch.publishedKm - mismatch.endsApartKm)),
   );
+  // 中心線の向きについて言えることは、指示子との食い違いが AC-P2-02 の許容に収まるかで変わる。
+  // 値を見ずに「許容に収まっている」と書くと、収まらない不一致が出たときに嘘を書き出すことになる
+  const centerline =
+    maxIdentDeviationDeg <= IDENT_TOLERANCE_DEG
+      ? [
+          `// - 指示子（磁方位）と座標から計算した真方位の食い違いは最大 ${maxIdentDeviationDeg.toFixed(1)}° で、`,
+          `//   AC-P2-02 の許容（${IDENT_TOLERANCE_DEG}°）に収まっている。つまりこのずれは**滑走路中心線に沿った方向のずれ**であり、`,
+          "//   中心線の向きそのものは動いていない（片端または両端が中心線に沿ってずれた形。どちらかは不明）。",
+          "// - したがって docs/spec.md §10.2 の主要な判別材料である「方位のズレ」には影響しない。",
+        ]
+      : [
+          `// - 指示子（磁方位）と座標から計算した真方位の食い違いは最大 ${maxIdentDeviationDeg.toFixed(1)}° で、`,
+          `//   AC-P2-02 の許容（${IDENT_TOLERANCE_DEG}°）を超えている。ずれが滑走路中心線に沿った方向だけとは言えず、`,
+          "//   中心線の向きも動いている可能性があり、docs/spec.md §10.2 の方位判定にも影響しうる。",
+        ];
   return [
     ...intro,
     ...mismatches.map(
@@ -336,11 +363,11 @@ function renderMismatchHeader(mismatches: readonly LengthMismatch[]): string {
     ),
     "//",
     "// この不一致について分かっていること:",
-    `// - 指示子（磁方位）と座標から計算した真方位の食い違いは最大 ${maxIdentDeviationDeg.toFixed(1)}° で、`,
-    "//   AC-P2-02 の許容（7°）に収まっている。つまりこのずれは**滑走路中心線に沿った方向のずれ**であり、",
-    "//   中心線そのものは動いていない（片端だけが延長・移設された形）。",
-    "// - したがって docs/spec.md §10.2 の主要な判別材料である「方位のズレ」には影響しない。",
-    `//   影響は evidence の「滑走路まで ◯km」が最大 ${maxShiftKm.toFixed(2)}km ずれることに限られる。`,
+    ...centerline,
+    `// - 端の座標のずれは最大 ${maxShiftKm.toFixed(2)}km。§10.2 は距離を evidence の「滑走路まで ◯km」の表示だけでなく、`,
+    `//   採点（距離km × ${SCORE_PER_KM}）・許容ズレ（20° − 距離km × ${TOLERANCE_DEG_PER_KM}）・進入/出発の距離条件（35km / 25km）にも`,
+    `//   使うので、距離を使う判定・採点すべてがこの分だけ動く（採点 ${(maxShiftKm * SCORE_PER_KM).toFixed(1)} 点・` +
+      `許容ズレ ${(maxShiftKm * TOLERANCE_DEG_PER_KM).toFixed(2)}° 相当）。`,
     "// - **どちらの端が旧位置かは判別できていない**（OurAirports の座標だけでは決められないので断定しない）。",
     "// - AIP AD 2.12 の公示座標を持っていないので、座標側の補正はしていない。",
   ].join("\n");

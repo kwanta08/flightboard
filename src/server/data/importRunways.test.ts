@@ -20,6 +20,10 @@ const ROW_RJAA_16L_34R = [
   "16L", "35.80270004272461", "140.3800048828125", "150",
   "34R", "35.78580093383789", "140.39199829101562", "330",
 ];
+// **合成データ**（実在の滑走路ではない）。真北へ 2.224km 伸びる滑走路に指示子 02/20（磁方位 20°/200°）と
+// 公示 6,562ft（2.000km）を当てた行。長さは +11.2% で不一致、指示子と真方位の食い違いは 12.0° で
+// AC-P2-02 の許容（7°）を超える。実データにはこの組み合わせが無いので、分岐を試すために作った
+const ROW_SYNTHETIC_OVER_7DEG = ["999999", "RJTT", "6562", "0", "02", "35.5", "139.8", "0", "20", "35.52", "139.8", "180"];
 
 /** 全フィールドを引用符で囲んだ CSV を組み立てる */
 function csv(...rows: readonly (readonly string[])[]): string {
@@ -328,11 +332,25 @@ describe("AC-P2-05: 生成ソースに残す警告と既知の不一致", () => 
     );
   });
 
-  it("不一致について分かっている事実を書く（中心線方向のずれ・影響の大きさ・旧位置は不明）", () => {
+  it("不一致について分かっている事実を書く（中心線方向のずれ・旧位置は不明）", () => {
     expect(source).toContain("食い違いは最大 1.9°");
+    expect(source).toContain("AC-P2-02 の許容（7°）に収まっている");
     expect(source).toContain("滑走路中心線に沿った方向のずれ");
-    expect(source).toContain("「滑走路まで ◯km」が最大 0.33km ずれる");
     expect(source).toContain("どちらの端が旧位置かは判別できていない");
+  });
+
+  it("どちらの端がずれたかは断定しない（座標から確かめていないので「片端だけ」と書かない）", () => {
+    expect(source).toContain("片端または両端が中心線に沿ってずれた形。どちらかは不明");
+    expect(source).not.toContain("片端だけが延長・移設された形");
+  });
+
+  it("距離のずれの影響を、docs/spec.md §10.2 が距離を使う箇所すべてについて書く", () => {
+    // §10.2 は距離を evidence の表示だけでなく採点・許容ズレ・進入/出発の距離条件にも使う。
+    // 0.332km なら採点 0.332 × 0.3 ≒ 0.1 点、許容ズレ 0.332 × 0.4 ≒ 0.13°
+    expect(source).toContain("端の座標のずれは最大 0.33km");
+    expect(source).toContain("採点（距離km × 0.3）・許容ズレ（20° − 距離km × 0.4）・進入/出発の距離条件");
+    expect(source).toContain("採点 0.1 点・許容ズレ 0.13° 相当");
+    expect(source).not.toContain("ずれることに限られる");
   });
 
   it("機械的に読める KNOWN_LENGTH_MISMATCHES も書き出す", () => {
@@ -349,5 +367,48 @@ describe("AC-P2-05: 生成ソースに残す警告と既知の不一致", () => 
     expect(clean).toContain("// 取り込み時の警告: なし");
     expect(clean).toContain("// 既知の不一致: なし");
     expect(clean).toContain("export const KNOWN_LENGTH_MISMATCHES: readonly LengthMismatch[] = [];");
+  });
+});
+
+describe("AC-P2-05: 指示子との食い違いが AC-P2-02 の許容（7°）を超える不一致", () => {
+  // 値を見ずに「許容に収まっている＝中心線は動いていない」と書くと、許容を超える不一致が出たときに
+  // 「最大 12.0° で、7° に収まっている」という自己矛盾をファイルに書き出してしまう。その分岐の検査
+  const imported = importRunwayEnds(csv(COLUMNS, ROW_SYNTHETIC_OVER_7DEG), ["RJTT"]);
+  const source = renderRunwaysModule(imported.ends, {
+    sourceName: "runways.csv",
+    generatedAt: "2026-09-16",
+    lengthMismatches: imported.lengthMismatches,
+  });
+
+  it("前提: この合成データは長さが +11.2% ずれ、指示子との食い違いが 12.0°（> 7°）になる", () => {
+    expect(imported.lengthMismatches).toEqual([
+      {
+        icao: "RJTT",
+        ident: "02",
+        oppositeIdent: "20",
+        endsApartKm: 2.224,
+        publishedKm: 2,
+        deviation: 0.1119,
+        identDeviationDeg: 12,
+      },
+    ]);
+  });
+
+  it("「許容に収まっている」「中心線に沿ったずれ」「方位には影響しない」とは書かない", () => {
+    expect(source).toContain("食い違いは最大 12.0°");
+    expect(source).not.toContain("AC-P2-02 の許容（7°）に収まっている");
+    expect(source).not.toContain("滑走路中心線に沿った方向のずれ");
+    expect(source).not.toContain("「方位のズレ」には影響しない");
+  });
+
+  it("中心線の向きも動いている可能性があり、§10.2 の方位判定にも影響しうると書く", () => {
+    expect(source).toContain("AC-P2-02 の許容（7°）を超えている");
+    expect(source).toContain("ずれが滑走路中心線に沿った方向だけとは言えず");
+    expect(source).toContain("中心線の向きも動いている可能性があり、docs/spec.md §10.2 の方位判定にも影響しうる");
+  });
+
+  it("距離のずれの大きさは、許容を超えていても同じように書く", () => {
+    expect(source).toContain("端の座標のずれは最大 0.22km");
+    expect(source).toContain("距離を使う判定・採点すべてがこの分だけ動く");
   });
 });
