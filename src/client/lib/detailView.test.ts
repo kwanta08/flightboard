@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { Airport, Flight, FlightDetailResponse } from "../../shared/types.ts";
+import type { Airport, AirportOps, Flight, FlightDetailResponse } from "../../shared/types.ts";
 import { INITIAL_DETAIL_STATE, reduceDetailState, type DetailEvent, type DetailState } from "./detailState.ts";
 import {
   airportLabel,
   buildDetailView,
+  DETAIL_ITEM_LABELS,
+  DETAIL_SECTION_TITLES,
   DETAIL_ERROR_MESSAGE,
   DETAIL_LOADING_MESSAGE,
   DETAIL_NOT_FOUND_MESSAGE,
@@ -541,5 +543,78 @@ describe("isCloseKey: パネル内の Esc", () => {
     expect(isCloseKey("Escape")).toBe(true);
     expect(isCloseKey("Enter")).toBe(false);
     expect(isCloseKey("ArrowDown")).toBe(false);
+  });
+});
+
+describe("buildDetailView: 「経路」の区分（AC-P2-53・F-05・S-03）", () => {
+  const AIRPORT_OPS: AirportOps[] = [
+    { icao: "RJTT", landingRunways: ["22", "23"], departingRunways: ["16L"], configLabel: "南風運用", basedOn: 6, updatedAt: "2026-09-16T00:00:00.000Z" },
+  ];
+  const EVIDENCE = ["方位のズレ 0.3°", "滑走路まで 10.7km", "降下中 −704fpm"];
+  const ESTIMATED_FLIGHT = makeFlight({
+    hex: "86e7a0",
+    callsign: "JAL38",
+    estimate: { phase: "arrival", airport: { icao: "RJTT", name: "羽田" }, runway: "22", confidence: 0.9, evidence: EVIDENCE },
+  });
+
+  const view = buildDetailView(makeDetail(ESTIMATED_FLIGHT), NAGAREYAMA, AIRPORT_OPS);
+
+  it("区分の末尾に「経路」が付く（既存の 4 区分の順は変わらない）", () => {
+    expect(view.sections.map((section) => section.title)).toEqual(Object.values(DETAIL_SECTION_TITLES));
+    expect(view.sections.at(-1)?.title).toBe("経路");
+  });
+
+  it("フェーズ・空港・滑走路・運用方向・確度が並ぶ（「一致度」はレベル2 なので出さない）", () => {
+    expect(view.sections.at(-1)?.items).toEqual([
+      { label: "推定フェーズ", value: "進入" },
+      { label: "空港", value: "羽田" },
+      { label: "滑走路", value: "RWY22" },
+      { label: "運用方向", value: "南風運用" },
+      { label: "確度", value: "高" },
+    ]);
+  });
+
+  it("項目名は F-05 の表（DETAIL_ITEM_LABELS）から出る", () => {
+    expect(view.sections.at(-1)?.items.map((item) => item.label)).toEqual([
+      DETAIL_ITEM_LABELS.phase,
+      DETAIL_ITEM_LABELS.airport,
+      DETAIL_ITEM_LABELS.runway,
+      DETAIL_ITEM_LABELS.airportConfig,
+      DETAIL_ITEM_LABELS.confidence,
+    ]);
+  });
+
+  it("evidence の各行が根拠として列挙される（S-03「経路推定の根拠を開示する」）", () => {
+    expect(view.sections.at(-1)?.notes).toEqual(EVIDENCE);
+  });
+
+  it("推定の無い機体には「経路」の区分を出さない（既存の 4 区分のまま）", () => {
+    const plain = buildDetailView(makeDetail(FULL_FLIGHT), NAGAREYAMA, AIRPORT_OPS);
+    expect(plain.sections.map((section) => section.title)).toEqual(["フライト", "機体", "飛行状態", "自分との関係"]);
+  });
+
+  it("運用方向の集計を渡さなければ「—」（他の項目は出す）", () => {
+    const withoutOps = buildDetailView(makeDetail(ESTIMATED_FLIGHT), NAGAREYAMA);
+    expect(valueOf(withoutOps, "経路", "運用方向")).toBe("—");
+    expect(valueOf(withoutOps, "経路", "滑走路")).toBe("RWY22");
+  });
+});
+
+describe("detailPanelContent: 運用方向の受け渡し（AC-P2-53）", () => {
+  const AIRPORT_OPS: AirportOps[] = [
+    { icao: "RJTT", landingRunways: ["22"], departingRunways: [], configLabel: "南風運用", basedOn: 2, updatedAt: "2026-09-16T00:00:00.000Z" },
+  ];
+  const detail = makeDetail(
+    makeFlight({
+      hex: "86e7a0",
+      estimate: { phase: "arrival", airport: { icao: "RJTT", name: "羽田" }, runway: "22", confidence: 0.9, evidence: [] },
+    }),
+  );
+
+  it("渡した airportOps が「経路」の運用方向に出る", () => {
+    const content = detailPanelContent({ hex: "86e7a0", status: "loaded", detail }, NAGAREYAMA, AIRPORT_OPS);
+    expect(content.view).toEqual(buildDetailView(detail, NAGAREYAMA, AIRPORT_OPS));
+    const items = content.view?.sections.at(-1)?.items ?? [];
+    expect(items.find((item) => item.label === "運用方向")?.value).toBe("南風運用");
   });
 });

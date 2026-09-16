@@ -339,7 +339,7 @@ describe("buildRows: 経路の推定バッジ（AC-P2-50）", () => {
       estimate: { phase: "arrival", airport: { icao: "RJTT", name: "羽田" }, runway: "22", confidence: 0.9, evidence: [] },
     });
     const row = onlyRow(buildRows([flight], NAGAREYAMA));
-    expect(row.estimateBadge).toEqual(buildEstimateBadge(flight));
+    expect(row.estimateBadge).toEqual(buildEstimateBadge(flight.estimate, row.altitudeM));
     expect(row.estimateBadge?.text).toBe("HND RWY22 進入 確度:高");
   });
 

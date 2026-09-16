@@ -11,6 +11,7 @@ import { useFlightDetail } from "./hooks/useFlightDetail.ts";
 import { useNearby } from "./hooks/useNearby.ts";
 import { CREDITS, DISCLAIMER } from "./lib/credits.ts";
 import { detailRefreshKey, isDetailOpen, trackForSelection } from "./lib/detailState.ts";
+import { buildAirportOpsHeader } from "./lib/estimateView.ts";
 import type { SortMode } from "./lib/flightRows.ts";
 import {
   advanceWidenFocus,
@@ -87,6 +88,9 @@ export function App() {
   const screen = appScreen(location, editing);
 
   const nearby = useNearby(nearbyParamsFor(screen, location, radiusKm, kindOption));
+  // 空港の運用方向（ヘッダーの常時表示と、詳細の「経路」の「運用方向」に使う）
+  const airportOps = nearby.data?.airportOps;
+  const airportOpsHeader = buildAirportOpsHeader(airportOps);
   // 行と本体は常に poller の状態（nearby）から作る（条件のキーが変わると poller がデータを消す）
   const rows = useMemo(() => listRows({ data: nearby.data, location, sortMode }), [nearby.data, location, sortMode]);
   const body = useMemo(
@@ -182,6 +186,8 @@ export function App() {
       <header className="app-header">
         <h1 className="app-title">FlightBoard</h1>
         <p className="app-location">{formatLocationHeader(location)}</p>
+        {/* 対象空港の運用方向（S-02・AC-P2-52）。常時表示し、まだ決まっていない空港は「判定中」と出す（文言は lib/estimateView.ts） */}
+        <p className="app-airport-ops">{airportOpsHeader}</p>
         {screen === "main" ? (
           <button
             type="button"
@@ -229,7 +235,7 @@ export function App() {
               見た目は styles.css で地図の右側に重ねる。メイン画面では地点が決まっている（appScreen）。location の判定は型を絞り込むだけ */}
           <div className="pane pane-map">
             {location !== undefined && isDetailOpen(detail) ? (
-              <DetailPanel state={detail} observer={location} onClose={handleDetailClose} />
+              <DetailPanel state={detail} observer={location} airportOps={airportOps} onClose={handleDetailClose} />
             ) : null}
             <section className="map-frame" aria-label="地図">
               {location !== undefined ? (

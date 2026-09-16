@@ -1,5 +1,6 @@
-// 詳細パネルの表示の判断と文言（AC-B12・AC-B13、F-05 の Phase 1 分・S-03）。単位は m・km/h 固定。
-// DetailPanel.tsx はこの結果を描画するだけにする。取得状態の遷移は lib/detailState.ts。
+// 詳細パネルの表示の判断と文言（AC-B12・AC-B13、F-05・S-03）。単位は m・km/h 固定。
+// DetailPanel.tsx はこの結果を描画するだけにする。取得状態の遷移は lib/detailState.ts、
+// 「経路」の区分（推定）の文言は lib/estimateView.ts。
 import {
   aircraftAltitudeM,
   bearingDeg,
@@ -9,8 +10,9 @@ import {
   slantDistanceKm,
   type LatLon,
 } from "../../shared/geo.ts";
-import type { Airport, Flight, FlightDetailResponse } from "../../shared/types.ts";
+import type { Airport, AirportOps, Flight, FlightDetailResponse } from "../../shared/types.ts";
 import { detailBody, type DetailState } from "./detailState.ts";
+import { buildEstimateSection, ESTIMATE_ITEM_LABELS, ESTIMATE_SECTION_TITLE } from "./estimateView.ts";
 import type { Observer } from "./flightRows.ts";
 import {
   DASH,
@@ -60,12 +62,13 @@ export const ROUTE_PROGRESS_LABEL = "進み具合";
 /** 写真のクレジットの頭（撮影者名の無い写真は出さない。仕様 §13） */
 export const PHOTO_CREDIT_PREFIX = "写真: ";
 
-/** F-05 の区分（Phase 1 分） */
+/** F-05 の区分。「経路」（推定）は Phase 2 で末尾に足した（AC-P2-53。文言は lib/estimateView.ts） */
 export const DETAIL_SECTION_TITLES = {
   flight: "フライト",
   aircraft: "機体",
   state: "飛行状態",
   relation: "自分との関係",
+  estimate: ESTIMATE_SECTION_TITLE,
 } as const;
 
 /** 各区分の項目名 */
@@ -89,13 +92,19 @@ export const DETAIL_ITEM_LABELS = {
   slantDistance: "直線距離",
   bearing: "方角",
   elevation: "仰角",
+  ...ESTIMATE_ITEM_LABELS,
 } as const;
 
 // ---- 表示の型 ----
 
 export type DetailItem = { label: string; value: string };
 
-export type DetailSection = { title: string; items: DetailItem[] };
+export type DetailSection = {
+  title: string;
+  items: DetailItem[];
+  /** 項目名の無い補足の行（「経路」の区分では `estimate.evidence` の各行）。無ければ省く */
+  notes?: string[];
+};
 
 export type DetailPhoto = {
   /** 表示する画像（`url` 優先、無ければ `thumbnailUrl`） */
@@ -255,8 +264,15 @@ function buildRoute(route: NonNullable<Flight["route"]>, current: LatLon): Detai
   };
 }
 
-/** 詳細パネルに出す内容（F-05 の区分。値の無い項目は「—」） */
-export function buildDetailView(detail: FlightDetailResponse, observer: Observer): DetailView {
+/**
+ * 詳細パネルに出す内容（F-05 の区分。値の無い項目は「—」）。
+ * `airportOps` は「経路」の区分の「運用方向」に使う（無ければその項目は「—」）
+ */
+export function buildDetailView(
+  detail: FlightDetailResponse,
+  observer: Observer,
+  airportOps?: readonly AirportOps[],
+): DetailView {
   const { flight } = detail;
   const labels = DETAIL_ITEM_LABELS;
   const callsign = nonEmpty(flight.callsign);
@@ -311,6 +327,12 @@ export function buildDetailView(detail: FlightDetailResponse, observer: Observer
     },
   ];
 
+  // 「経路」は推定のある機体だけ、区分の末尾に足す（AC-P2-53）
+  const estimateSection = buildEstimateSection(flight.estimate, airportOps);
+  if (estimateSection !== undefined) {
+    sections.push(estimateSection);
+  }
+
   return {
     title,
     ...(airlineName === undefined ? {} : { subtitle: airlineName }),
@@ -337,7 +359,11 @@ export type DetailPanelContent = {
  * 最後の結果があれば取り直し中もその結果を出す（404・失敗の案内も詳細も「詳細を取得しています…」に戻さない。取得中の案内は結果が無いときだけ）。
  * 詳細を出している間の取り直しでは何も添えず（ちらつかない）、最後の取得が失敗しているときだけ `notice` を添える
  */
-export function detailPanelContent(state: DetailState, observer: Observer): DetailPanelContent {
+export function detailPanelContent(
+  state: DetailState,
+  observer: Observer,
+  airportOps?: readonly AirportOps[],
+): DetailPanelContent {
   const body = detailBody(state);
   switch (body.kind) {
     case "empty":
@@ -349,7 +375,7 @@ export function detailPanelContent(state: DetailState, observer: Observer): Deta
     case "error":
       return { title: DETAIL_PANEL_LABEL, message: DETAIL_ERROR_MESSAGE };
     case "view": {
-      const view = buildDetailView(body.detail, observer);
+      const view = buildDetailView(body.detail, observer, airportOps);
       return {
         title: view.title,
         ...(view.subtitle === undefined ? {} : { subtitle: view.subtitle }),

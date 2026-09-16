@@ -1,6 +1,7 @@
 // 機体の詳細パネル（AC-B12・AC-B8・AC-B13）。地図ペインの右側に重ねて出す（フォーカスは奪わない）。
 // 表示の判断と文言は lib/detailView.ts・lib/detailState.ts が決め、ここは描画と閉じる操作の受け渡しだけを行う。
 import { useMemo, type KeyboardEvent } from "react";
+import type { AirportOps } from "../../shared/types.ts";
 import type { DetailState } from "../lib/detailState.ts";
 import {
   DETAIL_CLOSE_LABEL,
@@ -19,6 +20,8 @@ type DetailPanelProps = {
   state: DetailState;
   /** 観測地点（自分との関係の計算に使う） */
   observer: Observer;
+  /** 空港の運用方向の集計（`/api/nearby` の `airportOps`）。「経路」の区分の「運用方向」に使う */
+  airportOps?: readonly AirportOps[];
   /** 閉じるボタンとパネル内の Esc（詳細を閉じる＝選択を解除する） */
   onClose(): void;
 };
@@ -78,14 +81,24 @@ function DetailViewBody({ view }: { view: DetailView }) {
               </div>
             ))}
           </dl>
+          {/* 「経路」の区分の根拠（S-03）。同じ文が並びうるので位置で key を付ける（並べ替えも編集もしない一覧） */}
+          {section.notes !== undefined && section.notes.length > 0 ? (
+            <ul className="detail-notes">
+              {section.notes.map((note, index) => (
+                <li key={index} className="detail-note-item">
+                  {note}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </section>
       ))}
     </>
   );
 }
 
-export function DetailPanel({ state, observer, onClose }: DetailPanelProps) {
-  const content = useMemo(() => detailPanelContent(state, observer), [state, observer]);
+export function DetailPanel({ state, observer, airportOps, onClose }: DetailPanelProps) {
+  const content = useMemo(() => detailPanelContent(state, observer, airportOps), [state, observer, airportOps]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (!isCloseKey(event.key)) return;

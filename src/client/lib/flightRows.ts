@@ -141,7 +141,8 @@ function buildRow(flight: Flight, observer: Observer): FlightRow {
     visibilityLabel: visibilityLabel(visibility),
     isCargo,
     badgeText: isCargo ? CARGO_BADGE_LABEL : undefined,
-    estimateBadge: buildEstimateBadge(flight),
+    // 高度は行が計算した altitudeM をそのまま渡す（同じ式を二度評価しない。単位の切り替えは W7 の担当）
+    estimateBadge: buildEstimateBadge(flight.estimate, altitudeM),
   };
 }
 

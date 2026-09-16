@@ -1,6 +1,7 @@
 // 周辺の機体の一覧（AC-B4・AC-B6〜B8）。値と文言は lib/flightRows.ts、表示の判断は lib/listView.ts、
 // キー操作の判断は lib/listNavigation.ts が決め、ここは描画とクリック・キー操作の受け渡しだけを行う。
 import { useEffect, type KeyboardEvent, type Ref } from "react";
+import { ESTIMATE_BADGE_LABEL_PREFIX } from "../lib/estimateView.ts";
 import type { FlightRow } from "../lib/flightRows.ts";
 import { listKeyAction } from "../lib/listNavigation.ts";
 import {
@@ -92,10 +93,13 @@ function FlightRowContent({ row }: { row: FlightRow }) {
         ) : null}
       </div>
       {/* 経路の推定バッジ（AC-P2-50・AC-P2-51）。推定の無い機体では行ごと出さない。
-          ボタン・リンクにしないので Tab の停止点は増えない */}
+          ボタン・リンクにしないので Tab の停止点は増えない。
+          「推定」は不可視の文字として text の前に置く（素の span は WAI-ARIA 1.2 の generic ロールで
+          名前付けが禁止されているので aria-label は使わない。読み上げは estimateBadge.label と同じになる） */}
       {row.estimateBadge !== undefined ? (
         <div className="flight-row-line flight-row-estimate">
-          <span className={row.estimateBadge.className} aria-label={row.estimateBadge.label}>
+          <span className={row.estimateBadge.className}>
+            <span className="visually-hidden">{ESTIMATE_BADGE_LABEL_PREFIX} </span>
             {row.estimateBadge.text}
           </span>
         </div>
