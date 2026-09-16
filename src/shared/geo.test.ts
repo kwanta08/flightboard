@@ -7,6 +7,7 @@ import {
   aircraftAltitudeM,
   bearingDeg,
   bearingToJa16,
+  destinationPoint,
   elevationAngleDeg,
   haversineKm,
   slantDistanceKm,
@@ -61,6 +62,61 @@ describe("bearingDeg", () => {
     expect(b).toBeGreaterThanOrEqual(0);
     expect(b).toBeLessThan(360);
     expect(b).toBeGreaterThan(270);
+  });
+});
+
+describe("destinationPoint", () => {
+  it("赤道上を真東へ 111.195km 進むと経度 +1°", () => {
+    const to = destinationPoint({ lat: 0, lon: 0 }, 90, 111.195);
+    expect(to.lat).toBeCloseTo(0, 9);
+    expect(to.lon).toBeCloseTo(1, 4);
+  });
+
+  it("真北へ 111.195km 進むと緯度 +1°", () => {
+    const to = destinationPoint({ lat: 35, lon: 139 }, 0, 111.195);
+    expect(to.lat).toBeCloseTo(36, 4);
+    expect(to.lon).toBeCloseTo(139, 9);
+  });
+
+  it("距離 0 なら同じ点", () => {
+    const from = { lat: 35.5525, lon: 139.78 };
+    const to = destinationPoint(from, 217, 0);
+    expect(to.lat).toBeCloseTo(from.lat, 12);
+    expect(to.lon).toBeCloseTo(from.lon, 12);
+  });
+
+  it("進めた先までの距離と方位が、指定した距離・方位に戻る", () => {
+    const from = { lat: 35.8709, lon: 139.9256 };
+    for (const bearing of [0, 37, 90, 152.8, 217.3, 330, 359]) {
+      const to = destinationPoint(from, bearing, 42);
+      expect(haversineKm(from, to)).toBeCloseTo(42, 6);
+      expect(bearingDeg(from, to)).toBeCloseTo(bearing, 6);
+    }
+  });
+
+  it("方位は [0, 360) の外でも同じ点（-90° と 270°、360° と 0°）", () => {
+    const from = { lat: 35.5525, lon: 139.78 };
+    for (const [outside, inside] of [[-90, 270], [360, 0], [720 + 45, 45]] as const) {
+      const a = destinationPoint(from, outside, 25);
+      const b = destinationPoint(from, inside, 25);
+      expect(a.lat).toBeCloseTo(b.lat, 12);
+      expect(a.lon).toBeCloseTo(b.lon, 12);
+    }
+  });
+
+  it("日付変更線をまたいでも経度は [-180, 180)", () => {
+    const to = destinationPoint({ lat: 0, lon: 179.5 }, 90, 111.195);
+    expect(to.lon).toBeCloseTo(-179.5, 4);
+    expect(to.lon).toBeGreaterThanOrEqual(-180);
+    expect(to.lon).toBeLessThan(180);
+  });
+
+  it("逆向きに同じ距離を進むと元の点に戻る", () => {
+    const from = { lat: 35.552299, lon: 139.779999 };
+    const to = destinationPoint(from, 152.8, 10);
+    const back = destinationPoint(to, bearingDeg(to, from), 10);
+    expect(back.lat).toBeCloseTo(from.lat, 9);
+    expect(back.lon).toBeCloseTo(from.lon, 9);
   });
 });
 

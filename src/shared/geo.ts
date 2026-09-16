@@ -36,6 +36,25 @@ export function bearingDeg(from: LatLon, to: LatLon): number {
   return normalizeDeg(Math.atan2(y, x) * RAD_TO_DEG);
 }
 
+/**
+ * from から方位 bearingDeg（度、真北 0・時計回り）へ distanceKm だけ進めた点（大円上の前進）。
+ * bearingDeg の逆算（`bearingDeg(from, destinationPoint(from, b, d)) === b`）が成り立つ。
+ * 経度は [-180, 180) に正規化する。距離が 0 なら from と同じ点。
+ */
+export function destinationPoint(from: LatLon, bearingDeg: number, distanceKm: number): LatLon {
+  const delta = distanceKm / EARTH_RADIUS_KM;
+  const theta = bearingDeg * DEG_TO_RAD;
+  const phi0 = from.lat * DEG_TO_RAD;
+  const sinPhi = Math.sin(phi0) * Math.cos(delta) + Math.cos(phi0) * Math.sin(delta) * Math.cos(theta);
+  const phi = Math.asin(sinPhi);
+  const dLambda = Math.atan2(
+    Math.sin(theta) * Math.sin(delta) * Math.cos(phi0),
+    Math.cos(delta) - Math.sin(phi0) * sinPhi,
+  );
+  const lon = from.lon + dLambda * RAD_TO_DEG;
+  return { lat: phi * RAD_TO_DEG, lon: normalizeDeg(lon + 180) - 180 };
+}
+
 export const JA_16_DIRECTIONS = [
   "北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東",
   "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西",
