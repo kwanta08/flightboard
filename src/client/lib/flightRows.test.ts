@@ -13,7 +13,7 @@ import {
   summaryText,
   visibilityLabel,
 } from "./flightRows.ts";
-import { ELEVATION_ONE_DECIMAL_BELOW_DEG, nonEmpty } from "./format.ts";
+import { ELEVATION_ONE_DECIMAL_BELOW_DEG, nonEmpty, type Units } from "./format.ts";
 import { TYPE_NAMES, typeDisplayName } from "./typeNames.ts";
 
 // 仕様 6.5 の利用地点（流山）
@@ -356,6 +356,48 @@ describe("buildRows: 経路の推定バッジ（AC-P2-50）", () => {
       NAGAREYAMA,
     );
     expect(rows.map((row) => row.estimateBadge?.text)).toEqual(["通過（巡航 910m）", undefined]);
+  });
+});
+
+describe("buildRows: 表示の単位（F-09・AC-P2-72）", () => {
+  const FEET_AND_KNOTS: Units = { altitude: "ft", speed: "kt" };
+  // 既定の機体は altitudeBaroFt 3000（= 914.4m）
+  const rowWith = (units?: Units) =>
+    onlyRow(buildRows([makeFlight({ hex: "u1", groundSpeedKt: 250, verticalRateFpm: 1000 })], NAGAREYAMA, units));
+
+  it("ft・kt を渡すと高度と対地速度がその単位で出る", () => {
+    const row = rowWith(FEET_AND_KNOTS);
+    expect(row.altitudeText).toBe("3,000ft");
+    expect(row.speedText).toBe("250kt");
+  });
+
+  it("単位を渡さなければ m・km/h（既定。Q6）", () => {
+    const row = rowWith();
+    expect(row.altitudeText).toBe("910m");
+    expect(row.speedText).toBe("463km/h");
+  });
+
+  it("高度だけ ft にしても速度は km/h のまま（項目ごとに独立している）", () => {
+    const row = rowWith({ altitude: "ft", speed: "kmh" });
+    expect(row.altitudeText).toBe("3,000ft");
+    expect(row.speedText).toBe("463km/h");
+  });
+
+  it("距離は km、昇降の区分の文字は単位で変わらない（切り替えるのは高度と対地速度だけ）", () => {
+    const row = rowWith(FEET_AND_KNOTS);
+    expect(row.distanceText).toBe("38km");
+    expect(row.trendText).toBe("▲ 上昇");
+  });
+
+  it("並び替えのキー（altitudeM）は単位を変えても m のまま", () => {
+    expect(rowWith(FEET_AND_KNOTS).altitudeM).toBeCloseTo(914.4, 6);
+    expect(rowWith(FEET_AND_KNOTS).altitudeM).toBe(rowWith().altitudeM);
+  });
+
+  it("推定バッジの高度も同じ単位で出る（通過の「巡航」）", () => {
+    const flights = [makeFlight({ hex: "u2", estimate: { phase: "enroute", confidence: 0.5, evidence: [] } })];
+    expect(onlyRow(buildRows(flights, NAGAREYAMA, FEET_AND_KNOTS)).estimateBadge?.text).toBe("通過（巡航 3,000ft）");
+    expect(onlyRow(buildRows(flights, NAGAREYAMA)).estimateBadge?.text).toBe("通過（巡航 910m）");
   });
 });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_UNITS as FORMAT_DEFAULT_UNITS } from "./format.ts";
 import { APP_STORAGE_KEY, LOCATION_STORAGE_KEY, type LocationStorage } from "./locationStore.ts";
 import {
   ALTITUDE_UNIT_OPTIONS,
@@ -58,6 +59,10 @@ describe("DEFAULT_SETTINGS", () => {
       units: { altitude: "m", speed: "kmh" },
     });
     expect(DEFAULT_UNITS).toEqual({ altitude: "m", speed: "kmh" });
+  });
+
+  it("単位の型と既定値は format.ts に 1 つだけ置き、ここは再輸出する（二重定義にしない。W7）", () => {
+    expect(DEFAULT_UNITS).toBe(FORMAT_DEFAULT_UNITS);
   });
 });
 

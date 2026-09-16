@@ -1,6 +1,7 @@
 // 設定（検索半径・更新間隔・表示する種類・単位）の保存と読み込み、設定画面の文言と選択肢（F-09・S-04・AC-P2-71）。
 // 保存先は locationStore.ts と同じ 1 本のキー（flightboard.app.v2）の settings 部分で、locations とは互いに保ち合う。
 // SettingsScreen.tsx はこの結果を描画・配線するだけにする。
+import { DEFAULT_UNITS, type AltitudeUnit, type SpeedUnit, type Units } from "./format.ts";
 import {
   DEFAULT_KIND_OPTION,
   DEFAULT_RADIUS_KM,
@@ -11,16 +12,12 @@ import {
 import { APP_STORAGE_VERSION, readAppRecord, writeAppRecord, type LocationStorage } from "./locationStore.ts";
 import { DEFAULT_POLL_INTERVAL_MS } from "./poller.ts";
 
-// ---- 単位（Q6。既定は m・km/h。表示への反映は W7） ----
+// ---- 単位（Q6。既定は m・km/h） ----
+// 型と既定値は format.ts（書式の関数と同じ場所）に 1 つだけ置き、ここは設定の一部として再輸出する
+// （設定を読む側が format.ts を知らなくても済むようにする。二重に定義しない）
 
-export type AltitudeUnit = "m" | "ft";
-export type SpeedUnit = "kmh" | "kt";
-
-/** 表示の単位（高度・速度） */
-export type Units = { altitude: AltitudeUnit; speed: SpeedUnit };
-
-/** 単位の既定値（仕様 Q6「既定は m と km/h」） */
-export const DEFAULT_UNITS: Units = { altitude: "m", speed: "kmh" };
+export { DEFAULT_UNITS };
+export type { AltitudeUnit, SpeedUnit, Units };
 
 // ---- 更新間隔（F-06「既定 10 秒、設定で 5〜30 秒」） ----
 

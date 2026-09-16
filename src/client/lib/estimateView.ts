@@ -5,7 +5,7 @@
 import { AIRPORT_DISPLAY_NAMES, airportDisplayName } from "../../shared/airports.ts";
 import { confidenceLabel, type ConfidenceLabel } from "../../shared/estimate.ts";
 import type { AirportOps, Flight } from "../../shared/types.ts";
-import { DASH, formatAltitudeM, nonEmpty } from "./format.ts";
+import { DASH, DEFAULT_UNITS, formatAltitudeM, nonEmpty, type AltitudeUnit } from "./format.ts";
 import type { AppScreen } from "./setupFlow.ts";
 
 type Estimate = NonNullable<Flight["estimate"]>;
@@ -60,14 +60,19 @@ export type EstimateBadge = {
 /**
  * 一覧の行の推定バッジ（AC-P2-50・plan の生成規則表）。
  * `estimate` が無い機体と、phase が unknown の推定では undefined（バッジを出さない）。
- * 高度（m）は行が計算したものを受け取る（同じ値を二度計算しない。単位の切り替えは W7 の担当で、ここは既定の m で出す）
+ * 高度（m）は行が計算したものを受け取る（同じ値を二度計算しない）。
+ * `altitudeUnit` は通過のバッジの「巡航 11,000m」に使う（省くと既定の m。F-09・AC-P2-72）
  */
-export function buildEstimateBadge(estimate: Flight["estimate"], altitudeM: number | undefined): EstimateBadge | undefined {
+export function buildEstimateBadge(
+  estimate: Flight["estimate"],
+  altitudeM: number | undefined,
+  altitudeUnit: AltitudeUnit = DEFAULT_UNITS.altitude,
+): EstimateBadge | undefined {
   if (estimate === undefined) {
     return undefined;
   }
   const confidence = estimateConfidence(estimate);
-  const text = badgeText(estimate, confidence, altitudeM);
+  const text = badgeText(estimate, confidence, altitudeM, altitudeUnit);
   if (text === undefined) {
     return undefined;
   }
@@ -101,10 +106,13 @@ function badgeText(
   estimate: Estimate,
   confidence: ConfidenceLabel | undefined,
   altitudeM: number | undefined,
+  altitudeUnit: AltitudeUnit,
 ): string | undefined {
   if (estimate.phase === "enroute") {
     // 「通過（巡航 11,000m）」。高度が取れなければ括弧ごと省く
-    return altitudeM === undefined ? ENROUTE_BADGE_TEXT : `${ENROUTE_BADGE_TEXT}（${CRUISE_LABEL} ${formatAltitudeM(altitudeM)}）`;
+    return altitudeM === undefined
+      ? ENROUTE_BADGE_TEXT
+      : `${ENROUTE_BADGE_TEXT}（${CRUISE_LABEL} ${formatAltitudeM(altitudeM, altitudeUnit)}）`;
   }
   if (estimate.phase !== "arrival" && estimate.phase !== "departure") {
     return undefined;
@@ -226,7 +234,7 @@ export type EstimateSection = {
 /**
  * 詳細パネルの「経路」（AC-P2-53）。推定が無い機体では undefined（区分ごと出さない）。
  * 「運用方向」は推定した空港の集計（`airportOps`）から引く。決まっていない項目は「—」。
- * 単位の切り替えは W7 の担当なので、ここは数値の書式を持たない（`evidence` はサーバーの文字列をそのまま並べる）
+ * ここは数値の書式を持たない（単位の切り替えの対象になる値を出さない。`evidence` はサーバーの文字列をそのまま並べる）
  */
 export function buildEstimateSection(
   estimate: Flight["estimate"],

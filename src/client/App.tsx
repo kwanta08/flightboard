@@ -90,6 +90,8 @@ export function App() {
   const location = selectedLocation(book);
   const radiusKm = settings.radiusKm;
   const kindOption = settings.kindOption;
+  // 高度・対地速度の表示の単位（AC-P2-72）。一覧の行と詳細パネルの両方へ同じ値を渡す
+  const units = settings.units;
 
   // 一覧の並び替えと選択（保存しない。F-09 の項目ではない）
   const [sortMode, setSortMode] = useState<SortMode>(DEFAULT_SORT);
@@ -118,7 +120,10 @@ export function App() {
   const radiusSelectRef = useRef<HTMLSelectElement>(null);
 
   // セットアップ画面を開いている間に App が描き直されても MemoizedSetupScreen の props を変えないため、
-  // 確定のハンドラはいまの一覧と目的を ref から読む（依存を applyBook だけに保ち、ドラッグ中のピンを戻さない）
+  // 確定のハンドラはいまの一覧と目的を ref から読む（依存を applyBook だけに保ち、ドラッグ中のピンを戻さない）。
+  // 前提: セットアップ画面を出している間、book / editing は利用者の click でしか変わらない
+  // （確定・地点の選択・削除はすべてクリック起点で、その間はポーリングも止まる。listView の nearbyParamsFor）。
+  // ref の更新は useEffect なので、非同期に book を変える経路を足すと、描画と effect の間の確定が古い一覧を読む
   const bookRef = useRef(book);
   const editingRef = useRef(editing);
   useEffect(() => {
@@ -153,7 +158,10 @@ export function App() {
   const airportOps = nearby.data?.airportOps;
   const airportOpsHeader = airportOpsHeaderFor(screen, airportOps);
   // 行と本体は常に poller の状態（nearby）から作る（条件のキーが変わると poller がデータを消す）
-  const rows = useMemo(() => listRows({ data: nearby.data, location, sortMode }), [nearby.data, location, sortMode]);
+  const rows = useMemo(
+    () => listRows({ data: nearby.data, location, sortMode, units }),
+    [nearby.data, location, sortMode, units],
+  );
   const body = useMemo(
     () => listBody({ data: nearby.data, error: nearby.error, rows, radiusKm }),
     [nearby.data, nearby.error, rows, radiusKm],
@@ -208,6 +216,7 @@ export function App() {
     if (removeFocus === "selected-location") {
       selectedLocationRef.current?.focus();
     } else {
+      // settings-heading（削除後の一覧が空）は画面の操作からは到達しない防御（lib の focusAfterRemoveLocation を見よ）
       settingsHeadingRef.current?.focus();
     }
     setRemoveFocus(undefined);
@@ -356,7 +365,13 @@ export function App() {
               見た目は styles.css で地図の右側に重ねる。メイン画面では地点が決まっている（appScreen）。location の判定は型を絞り込むだけ */}
           <div className="pane pane-map">
             {location !== undefined && isDetailOpen(detail) ? (
-              <DetailPanel state={detail} observer={location} airportOps={airportOps} onClose={handleDetailClose} />
+              <DetailPanel
+                state={detail}
+                observer={location}
+                airportOps={airportOps}
+                units={units}
+                onClose={handleDetailClose}
+              />
             ) : null}
             <section className="map-frame" aria-label="地図">
               {location !== undefined ? (

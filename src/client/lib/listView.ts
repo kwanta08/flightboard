@@ -12,6 +12,7 @@ import {
   type SortMode,
   type Visibility,
 } from "./flightRows.ts";
+import type { Units } from "./format.ts";
 import { sameHex } from "./hex.ts";
 import type { Location } from "./locationStore.ts";
 import type { PollerState } from "./poller.ts";
@@ -133,16 +134,21 @@ export function nearbyParamsFor(
   return { lat: location.lat, lon: location.lon, radiusKm, kinds: kindsFor(kindOption) };
 }
 
-/** 一覧に出す行（応答の機体をすべて行にして並べる）。応答か地点が無ければ空 */
+/**
+ * 一覧に出す行（応答の機体をすべて行にして並べる）。応答か地点が無ければ空。
+ * `units` は高度・対地速度の表示の単位（省くと既定の m・km/h。F-09・AC-P2-72）。
+ * 並び替えは単位に依らない（「高度順」のキーは行の `altitudeM`＝常に m）
+ */
 export function listRows(args: {
   data: NearbyResponse | undefined;
   location: Location | undefined;
   sortMode: SortMode;
+  units?: Units;
 }): FlightRow[] {
   if (args.data === undefined || args.location === undefined) {
     return [];
   }
-  return sortRows(buildRows(args.data.flights, args.location), args.sortMode);
+  return sortRows(buildRows(args.data.flights, args.location, args.units), args.sortMode);
 }
 
 // ---- 一覧の本体 ----

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CONFIDENCE_HIGH, CONFIDENCE_MEDIUM } from "../../shared/estimate.ts";
 import { aircraftAltitudeM } from "../../shared/geo.ts";
 import type { AirportOps, Flight } from "../../shared/types.ts";
-import { finiteOrUndefined } from "./format.ts";
+import { finiteOrUndefined, type AltitudeUnit } from "./format.ts";
 import {
   AIRPORT_OPS_PENDING_TEXT,
   airportConfigLabel,
@@ -201,6 +201,33 @@ describe("buildEstimateBadge: enroute に滑走路が付いた応答（W4 コー
     expect(badge?.text).toBe("通過（巡航 11,000m）");
     expect(badge?.confidence).toBeUndefined();
     expect(badge?.className).toBe(ESTIMATE_BADGE_CLASS);
+  });
+});
+
+describe("buildEstimateBadge: 高度の単位（F-09・AC-P2-72）", () => {
+  /** 行と同じ呼び方に単位を足したもの（高度は行が計算した m を渡し、表示の単位だけを切り替える） */
+  function badgeTextWithUnit(estimate: Flight["estimate"], altitudeUnit: AltitudeUnit, altitudeGeomFt?: number) {
+    const flight = makeFlight(estimate, altitudeGeomFt);
+    return buildEstimateBadge(flight.estimate, finiteOrUndefined(aircraftAltitudeM(flight.position)), altitudeUnit)
+      ?.text;
+  }
+
+  it("ft なら通過の高度も ft（11,000m ≒ 36,090ft。10ft 単位に丸める）", () => {
+    expect(badgeTextWithUnit({ phase: "enroute", confidence: 0.5, evidence: [] }, "ft", CRUISE_11000M_FT)).toBe(
+      "通過（巡航 36,090ft）",
+    );
+  });
+
+  it("単位を省くと既定の m", () => {
+    expect(badgeTextOf({ phase: "enroute", confidence: 0.5, evidence: [] }, CRUISE_11000M_FT)).toBe(
+      "通過（巡航 11,000m）",
+    );
+  });
+
+  it("進入・出発のバッジは高度を出さないので単位で変わらない", () => {
+    const estimate: Flight["estimate"] = { phase: "arrival", airport: HND, runway: "22", confidence: 0.9, evidence: [] };
+    expect(badgeTextWithUnit(estimate, "ft")).toBe("HND RWY22 進入 確度:高");
+    expect(badgeTextWithUnit(estimate, "m")).toBe("HND RWY22 進入 確度:高");
   });
 });
 

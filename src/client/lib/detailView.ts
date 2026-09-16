@@ -1,4 +1,4 @@
-// 詳細パネルの表示の判断と文言（AC-B12・AC-B13、F-05・S-03）。単位は m・km/h 固定。
+// 詳細パネルの表示の判断と文言（AC-B12・AC-B13、F-05・S-03）。高度と対地速度は設定の単位で出す（F-09・AC-P2-72）。
 // DetailPanel.tsx はこの結果を描画するだけにする。取得状態の遷移は lib/detailState.ts、
 // 「経路」の区分（推定）の文言は lib/estimateView.ts。
 import {
@@ -16,6 +16,7 @@ import { buildEstimateSection, ESTIMATE_ITEM_LABELS, ESTIMATE_SECTION_TITLE } fr
 import type { Observer } from "./flightRows.ts";
 import {
   DASH,
+  DEFAULT_UNITS,
   finiteOrUndefined,
   formatAltitudeFt,
   formatBearing,
@@ -26,6 +27,7 @@ import {
   isFiniteNumber,
   nonEmpty,
   type MaybeNumber,
+  type Units,
 } from "./format.ts";
 import { typeDisplayName } from "./typeNames.ts";
 
@@ -269,12 +271,15 @@ function buildRoute(route: NonNullable<Flight["route"]>, current: LatLon): Detai
 
 /**
  * 詳細パネルに出す内容（F-05 の区分。値の無い項目は「—」）。
- * `airportOps` は「経路」の区分の「運用方向」に使う（無ければその項目は「—」）
+ * `airportOps` は「経路」の区分の「運用方向」に使う（無ければその項目は「—」）。
+ * `units` は高度・対地速度の表示の単位（省くと既定の m・km/h。AC-P2-72）。
+ * 昇降率は m/分（仕様 Q15）、距離は km で、どちらも単位の切り替えの対象外
  */
 export function buildDetailView(
   detail: FlightDetailResponse,
   observer: Observer,
   airportOps?: readonly AirportOps[],
+  units: Units = DEFAULT_UNITS,
 ): DetailView {
   const { flight } = detail;
   const labels = DETAIL_ITEM_LABELS;
@@ -307,12 +312,12 @@ export function buildDetailView(
     {
       title: DETAIL_SECTION_TITLES.state,
       items: [
-        { label: labels.altitudeBaro, value: formatAltitudeFt(flight.position.altitudeBaroFt) },
-        { label: labels.altitudeGeom, value: formatAltitudeFt(flight.position.altitudeGeomFt) },
-        { label: labels.groundSpeed, value: formatSpeedKt(flight.groundSpeedKt) },
+        { label: labels.altitudeBaro, value: formatAltitudeFt(flight.position.altitudeBaroFt, units.altitude) },
+        { label: labels.altitudeGeom, value: formatAltitudeFt(flight.position.altitudeGeomFt, units.altitude) },
+        { label: labels.groundSpeed, value: formatSpeedKt(flight.groundSpeedKt, units.speed) },
         { label: labels.track, value: formatHeadingDeg(flight.trackDeg) },
         { label: labels.verticalRate, value: formatVerticalRateFpm(flight.verticalRateFpm) },
-        { label: labels.targetAltitude, value: formatAltitudeFt(flight.targetAltitudeFt) },
+        { label: labels.targetAltitude, value: formatAltitudeFt(flight.targetAltitudeFt, units.altitude) },
         { label: labels.squawk, value: nonEmpty(flight.squawk) ?? DASH },
       ],
     },
@@ -366,6 +371,7 @@ export function detailPanelContent(
   state: DetailState,
   observer: Observer,
   airportOps?: readonly AirportOps[],
+  units?: Units,
 ): DetailPanelContent {
   const body = detailBody(state);
   switch (body.kind) {
@@ -378,7 +384,7 @@ export function detailPanelContent(
     case "error":
       return { title: DETAIL_PANEL_LABEL, message: DETAIL_ERROR_MESSAGE };
     case "view": {
-      const view = buildDetailView(body.detail, observer, airportOps);
+      const view = buildDetailView(body.detail, observer, airportOps, units);
       return {
         title: view.title,
         ...(view.subtitle === undefined ? {} : { subtitle: view.subtitle }),

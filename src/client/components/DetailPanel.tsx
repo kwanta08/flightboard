@@ -15,6 +15,7 @@ import {
   type DetailView,
 } from "../lib/detailView.ts";
 import type { Observer } from "../lib/flightRows.ts";
+import type { Units } from "../lib/format.ts";
 
 type DetailPanelProps = {
   /** 選択中の機体の詳細の取得状態（useFlightDetail） */
@@ -23,6 +24,8 @@ type DetailPanelProps = {
   observer: Observer;
   /** 空港の運用方向の集計（`/api/nearby` の `airportOps`）。「経路」の区分の「運用方向」に使う */
   airportOps?: readonly AirportOps[];
+  /** 高度・対地速度の表示の単位（設定。渡さなければ既定の m・km/h。AC-P2-72） */
+  units?: Units;
   /** 閉じるボタンとパネル内の Esc（詳細を閉じる＝選択を解除する） */
   onClose(): void;
 };
@@ -113,8 +116,11 @@ function DetailViewBody({ view }: { view: DetailView }) {
   );
 }
 
-export function DetailPanel({ state, observer, airportOps, onClose }: DetailPanelProps) {
-  const content = useMemo(() => detailPanelContent(state, observer, airportOps), [state, observer, airportOps]);
+export function DetailPanel({ state, observer, airportOps, units, onClose }: DetailPanelProps) {
+  const content = useMemo(
+    () => detailPanelContent(state, observer, airportOps, units),
+    [state, observer, airportOps, units],
+  );
 
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (!isCloseKey(event.key)) return;

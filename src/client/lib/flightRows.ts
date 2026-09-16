@@ -6,6 +6,7 @@ import { buildEstimateBadge, type EstimateBadge } from "./estimateView.ts";
 import {
   airportShortLabel,
   DASH,
+  DEFAULT_UNITS,
   ELEVATION_ONE_DECIMAL_BELOW_DEG,
   finiteOrUndefined,
   formatAltitudeM,
@@ -18,6 +19,7 @@ import {
   isFiniteNumber,
   nonEmpty,
   verticalTrend,
+  type Units,
   type VerticalTrend,
 } from "./format.ts";
 import type { Location } from "./locationStore.ts";
@@ -44,7 +46,7 @@ export type FlightRow = {
   /** "HND Tokyo → FUK Fukuoka"。route が無ければ undefined（この段だけを省く） */
   routeText?: string;
   typeText: string;
-  /** 機体の高度 h（m）。altitudeGeomFt 優先、無ければ altitudeBaroFt */
+  /** 機体の高度 h（m）。altitudeGeomFt 優先、無ければ altitudeBaroFt。表示の単位に関わらず m（並び替えのキーに使う） */
   altitudeM?: number;
   altitudeText: string;
   speedText: string;
@@ -102,7 +104,7 @@ export function visibilityLabel(visibility: Visibility | undefined): string | un
   return visibility === undefined ? undefined : VISIBILITY_LABELS[visibility];
 }
 
-function buildRow(flight: Flight, observer: Observer): FlightRow {
+function buildRow(flight: Flight, observer: Observer, units: Units): FlightRow {
   const target = { lat: flight.position.lat, lon: flight.position.lon };
   const distanceKm = haversineKm(observer, target);
   const altitudeM = finiteOrUndefined(aircraftAltitudeM(flight.position));
@@ -128,8 +130,8 @@ function buildRow(flight: Flight, observer: Observer): FlightRow {
       route === undefined ? undefined : `${airportShortLabel(route.origin)} → ${airportShortLabel(route.destination)}`,
     typeText: typeDisplayName(flight.typeCode),
     altitudeM,
-    altitudeText: formatAltitudeM(altitudeM),
-    speedText: formatSpeedKt(flight.groundSpeedKt),
+    altitudeText: formatAltitudeM(altitudeM, units.altitude),
+    speedText: formatSpeedKt(flight.groundSpeedKt, units.speed),
     trend,
     trendText: formatTrend(trend),
     distanceKm,
@@ -141,14 +143,17 @@ function buildRow(flight: Flight, observer: Observer): FlightRow {
     visibilityLabel: visibilityLabel(visibility),
     isCargo,
     badgeText: isCargo ? CARGO_BADGE_LABEL : undefined,
-    // 高度は行が計算した altitudeM をそのまま渡す（同じ式を二度評価しない。単位の切り替えは W7 の担当）
-    estimateBadge: buildEstimateBadge(flight.estimate, altitudeM),
+    // 高度は行が計算した altitudeM をそのまま渡す（同じ式を二度評価しない）。バッジの高度も同じ単位で出す
+    estimateBadge: buildEstimateBadge(flight.estimate, altitudeM, units.altitude),
   };
 }
 
-/** 機体を一覧の行にする。入力の機体をすべて行にし、件数を減らさない（順序は入力のまま） */
-export function buildRows(flights: readonly Flight[], observer: Observer): FlightRow[] {
-  return flights.map((flight) => buildRow(flight, observer));
+/**
+ * 機体を一覧の行にする。入力の機体をすべて行にし、件数を減らさない（順序は入力のまま）。
+ * `units` は高度・対地速度の表示の単位（省くと既定の m・km/h。F-09・AC-P2-72）
+ */
+export function buildRows(flights: readonly Flight[], observer: Observer, units: Units = DEFAULT_UNITS): FlightRow[] {
+  return flights.map((flight) => buildRow(flight, observer, units));
 }
 
 function compareText(a: string, b: string): number {

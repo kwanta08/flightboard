@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   airportShortLabel,
   DASH,
+  DEFAULT_UNITS,
   finiteOrUndefined,
   formatAltitudeFt,
   formatAltitudeM,
@@ -69,6 +70,80 @@ describe("formatSpeedKt（kt → km/h の整数）", () => {
 
   it("-0 に丸まる負の小さな値は「0km/h」（-0.2kt = -0.37km/h）", () => {
     expect(formatSpeedKt(-0.2)).toBe("0km/h");
+  });
+});
+
+describe("表示の単位（F-09・仕様 Q6・AC-P2-72）", () => {
+  it("既定は m と km/h", () => {
+    expect(DEFAULT_UNITS).toEqual({ altitude: "m", speed: "kmh" });
+  });
+
+  describe("formatAltitudeM / formatAltitudeFt: 単位 ft（10 単位に丸めて桁区切り。m と同じ流儀）", () => {
+    it.each([
+      [6600, "6,600ft"],
+      [21654, "21,650ft"], // 10ft 単位に丸める
+      [999, "1,000ft"],
+      [0, "0ft"],
+      [-10, "-10ft"],
+    ])("%s ft → %s", (feet, expected) => {
+      expect(formatAltitudeFt(feet, "ft")).toBe(expected);
+    });
+
+    it.each([
+      [2011.68, "6,600ft"], // 2011.68 / 0.3048 = 6600
+      [914.4, "3,000ft"],
+      [10999.9272, "36,090ft"], // 巡航 11,000m ≒ 36,089ft → 36,090
+      [0, "0ft"],
+    ])("%s m → %s", (meters, expected) => {
+      expect(formatAltitudeM(meters, "ft")).toBe(expected);
+    });
+
+    it("単位を省くと既定の m（明示した m と同じ）", () => {
+      expect(formatAltitudeM(2011.68)).toBe(formatAltitudeM(2011.68, "m"));
+      expect(formatAltitudeM(2011.68)).toBe("2,010m");
+      expect(formatAltitudeFt(6600)).toBe(formatAltitudeFt(6600, "m"));
+      expect(formatAltitudeFt(6600)).toBe("2,010m");
+    });
+
+    it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY])("値が無ければ単位に関わらず「—」（%s）", (value) => {
+      expect(formatAltitudeFt(value, "ft")).toBe("—");
+      expect(formatAltitudeM(value, "ft")).toBe("—");
+    });
+
+    it("-0 に丸まる負の小さな値は「0ft」（-4ft）", () => {
+      expect(formatAltitudeFt(-4, "ft")).toBe("0ft");
+    });
+  });
+
+  describe("formatSpeedKt: 単位 kt（km/h と同じく整数に丸める）", () => {
+    it.each([
+      [250, "250kt"],
+      [480.4, "480kt"], // 480.4 → 480
+      [0, "0kt"],
+    ])("%s kt → %s", (knots, expected) => {
+      expect(formatSpeedKt(knots, "kt")).toBe(expected);
+    });
+
+    it("単位を省くと既定の km/h（明示した kmh と同じ）", () => {
+      expect(formatSpeedKt(250)).toBe(formatSpeedKt(250, "kmh"));
+      expect(formatSpeedKt(250)).toBe("463km/h");
+    });
+
+    it.each([null, undefined, Number.NaN])("値が無ければ単位に関わらず「—」（%s）", (value) => {
+      expect(formatSpeedKt(value, "kt")).toBe("—");
+    });
+
+    it("-0 に丸まる負の小さな値は「0kt」（-0.2kt）", () => {
+      expect(formatSpeedKt(-0.2, "kt")).toBe("0kt");
+    });
+  });
+
+  it("昇降率は単位の切り替えの対象外（仕様 Q15「昇降率の単位は m/分」）", () => {
+    expect(formatVerticalRateFpm(1000)).toBe("+305m/分");
+  });
+
+  it("距離は単位の切り替えの対象外（km のまま。F-09 は高度と速度だけを挙げている）", () => {
+    expect(formatDistanceKm(12.4)).toBe("12km");
   });
 });
 

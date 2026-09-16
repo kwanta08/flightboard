@@ -20,6 +20,7 @@ import {
   type DetailView,
 } from "./detailView.ts";
 import type { Observer } from "./flightRows.ts";
+import type { Units } from "./format.ts";
 
 // 仕様 6.5 の利用地点（流山）
 const NAGAREYAMA: Observer = { lat: 35.8709, lon: 139.9256, elevationM: 15 };
@@ -166,11 +167,48 @@ describe("buildDetailView: 全項目が揃った詳細の値", () => {
     });
   });
 
-  it("単位は m・km/h 固定（ft・kt・fpm を出さない）", () => {
+  it("単位を渡さなければ m・km/h（ft・kt・fpm を出さない）", () => {
     const values = view.sections.flatMap((section) => section.items.map((item) => item.value));
     for (const value of values) {
       expect(value).not.toMatch(/ft|kt|fpm/);
     }
+  });
+});
+
+describe("buildDetailView: 表示の単位（F-09・AC-P2-72）", () => {
+  const FEET_AND_KNOTS: Units = { altitude: "ft", speed: "kt" };
+  // FULL_FLIGHT: 気圧高度 2900ft・GNSS 高度 3000ft・目標高度 5000ft・対地速度 250kt・昇降率 +1000fpm
+  const view = buildDetailView(makeDetail(FULL_FLIGHT), NAGAREYAMA, undefined, FEET_AND_KNOTS);
+
+  it("飛行状態の高度は ft（換算せず、10ft 単位に丸めて桁区切り）", () => {
+    expect(valueOf(view, "飛行状態", "気圧高度")).toBe("2,900ft");
+    expect(valueOf(view, "飛行状態", "GNSS 高度")).toBe("3,000ft");
+    expect(valueOf(view, "飛行状態", "目標高度")).toBe("5,000ft");
+  });
+
+  it("対地速度は kt", () => {
+    expect(valueOf(view, "飛行状態", "対地速度")).toBe("250kt");
+  });
+
+  it("昇降率は m/分 のまま（仕様 Q15。切り替えるのは高度と対地速度だけ）", () => {
+    expect(valueOf(view, "飛行状態", "昇降率")).toBe("+305m/分");
+  });
+
+  it("自分との関係の距離は km のまま", () => {
+    expect(valueOf(view, "自分との関係", "水平距離")).toBe("38km");
+    expect(valueOf(view, "自分との関係", "直線距離")).toBe("38km");
+  });
+
+  it("高度だけ ft にしても対地速度は km/h のまま（項目ごとに独立している）", () => {
+    const altitudeOnly = buildDetailView(makeDetail(FULL_FLIGHT), NAGAREYAMA, undefined, { altitude: "ft", speed: "kmh" });
+    expect(valueOf(altitudeOnly, "飛行状態", "GNSS 高度")).toBe("3,000ft");
+    expect(valueOf(altitudeOnly, "飛行状態", "対地速度")).toBe("463km/h");
+  });
+
+  it("値の無い項目は単位に関わらず「—」", () => {
+    const empty = buildDetailView(makeDetail(makeFlight({ hex: "86e7a0" })), NAGAREYAMA, undefined, FEET_AND_KNOTS);
+    expect(valueOf(empty, "飛行状態", "気圧高度")).toBe("—");
+    expect(valueOf(empty, "飛行状態", "対地速度")).toBe("—");
   });
 });
 
@@ -597,6 +635,24 @@ describe("buildDetailView: 「経路」の区分（AC-P2-53・F-05・S-03）", (
     const withoutOps = buildDetailView(makeDetail(ESTIMATED_FLIGHT), NAGAREYAMA);
     expect(valueOf(withoutOps, "経路", "運用方向")).toBe("—");
     expect(valueOf(withoutOps, "経路", "滑走路")).toBe("RWY22");
+  });
+});
+
+describe("detailPanelContent: 表示の単位の受け渡し（AC-P2-72）", () => {
+  const FEET_AND_KNOTS: Units = { altitude: "ft", speed: "kt" };
+  const detail = makeDetail(FULL_FLIGHT);
+
+  it("渡した単位が詳細に出る（buildDetailView へそのまま通す）", () => {
+    const content = detailPanelContent({ hex: "86e7a0", status: "loaded", detail }, NAGAREYAMA, undefined, FEET_AND_KNOTS);
+    expect(content.view).toEqual(buildDetailView(detail, NAGAREYAMA, undefined, FEET_AND_KNOTS));
+    expect(content.view && valueOf(content.view, "飛行状態", "GNSS 高度")).toBe("3,000ft");
+    expect(content.view && valueOf(content.view, "飛行状態", "対地速度")).toBe("250kt");
+  });
+
+  it("単位を渡さなければ m・km/h（既定）", () => {
+    const content = detailPanelContent({ hex: "86e7a0", status: "loaded", detail }, NAGAREYAMA);
+    expect(content.view && valueOf(content.view, "飛行状態", "GNSS 高度")).toBe("910m");
+    expect(content.view && valueOf(content.view, "飛行状態", "対地速度")).toBe("463km/h");
   });
 });
 

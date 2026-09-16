@@ -1,4 +1,4 @@
-// 一覧・詳細で使う表示用の文字列（AC-B4・AC-B13）。単位は m・km/h 固定。
+// 一覧・詳細で使う表示用の文字列（AC-B4・AC-B13）。高度と対地速度は設定の単位で出す（F-09・AC-P2-72）。
 // 値が無い（null / undefined）・非有限（NaN・±Infinity）なら DASH を返す。
 import { bearingToJa16, FT_TO_M } from "../../shared/geo.ts";
 import type { Airport } from "../../shared/types.ts";
@@ -8,6 +8,29 @@ export const DASH = "—";
 
 /** 1 kt = 1.852 km/h */
 export const KT_TO_KMH = 1.852;
+
+// ---- 表示の単位（F-09・仕様 Q6） ----
+// 切り替えるのは高度と対地速度だけ。昇降率は m/分（Q15）、距離は km で固定する。
+// 型と既定値はここ（書式の関数と同じ場所）に 1 つだけ置き、settingsStore.ts はこれを再輸出する
+// （settingsStore.ts に置くと format.ts → settingsStore.ts → listView.ts → flightRows.ts → format.ts の循環になる）。
+
+export type AltitudeUnit = "m" | "ft";
+export type SpeedUnit = "kmh" | "kt";
+
+/** 表示の単位（高度・速度）。設定（settingsStore.ts の `Settings.units`）から渡る */
+export type Units = { altitude: AltitudeUnit; speed: SpeedUnit };
+
+/** 単位の既定値（仕様 Q6「既定は m と km/h」）。単位を渡さない呼び出しはこの値で出す */
+export const DEFAULT_UNITS: Units = { altitude: "m", speed: "kmh" };
+
+/** 速度の単位の表示（`kmh` だけ値と表示が違う） */
+const SPEED_UNIT_SUFFIX: Readonly<Record<SpeedUnit, string>> = { kmh: "km/h", kt: "kt" };
+
+/**
+ * 高度の丸めの単位（m・ft とも 10 単位）。
+ * 10ft ≒ 3m なので、ft に切り替えても m 表示（10m 刻み）より粗くはならない（単位を変えて情報が減らない）
+ */
+const ALTITUDE_ROUND_STEP = 10;
 
 /** 上昇／下降／水平の境界（fpm）。§10.2 のフェーズ判定と同じ値 */
 export const VERTICAL_TREND_THRESHOLD_FPM = 200;
@@ -47,27 +70,41 @@ function groupThousands(integer: number): string {
   return sign + String(Math.abs(integer)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-/** 高度（m）を 10m 単位に丸めて桁区切り（例 2011.68 → "2,010m"） */
-export function formatAltitudeM(meters: MaybeNumber): string {
+/** 高度の値（その単位のままの数）を 10 単位に丸めて桁区切りし、単位を付ける */
+function altitudeText(value: number, unit: AltitudeUnit): string {
+  const rounded = Math.round(value / ALTITUDE_ROUND_STEP) * ALTITUDE_ROUND_STEP;
+  return `${groupThousands(normalizeZero(rounded))}${unit}`;
+}
+
+/**
+ * 高度（m）を表示の単位で。10 単位に丸めて桁区切り（例 2011.68 → "2,010m"、単位が ft なら "6,600ft"）。
+ * 単位を省くと既定の m（AC-P2-72）
+ */
+export function formatAltitudeM(meters: MaybeNumber, unit: AltitudeUnit = DEFAULT_UNITS.altitude): string {
   if (!isFiniteNumber(meters)) {
     return DASH;
   }
-  const rounded = Math.round(meters / 10) * 10;
-  return `${groupThousands(normalizeZero(rounded))}m`;
+  return altitudeText(unit === "ft" ? meters / FT_TO_M : meters, unit);
 }
 
-/** 高度（ft）を m に換算して formatAltitudeM で表示（例 6600ft → "2,010m"） */
-export function formatAltitudeFt(feet: MaybeNumber): string {
-  return isFiniteNumber(feet) ? formatAltitudeM(feet * FT_TO_M) : DASH;
+/**
+ * 高度（ft）を表示の単位で（例 6600ft → "2,010m"、単位が ft なら "6,600ft"）。
+ * 単位が ft なら換算しない（ft → m → ft の往復で誤差を作らない）
+ */
+export function formatAltitudeFt(feet: MaybeNumber, unit: AltitudeUnit = DEFAULT_UNITS.altitude): string {
+  if (!isFiniteNumber(feet)) {
+    return DASH;
+  }
+  return unit === "ft" ? altitudeText(feet, "ft") : formatAltitudeM(feet * FT_TO_M, "m");
 }
 
-/** 対地速度（kt）を km/h の整数に（例 250kt → "463km/h"） */
-export function formatSpeedKt(knots: MaybeNumber): string {
+/** 対地速度（kt）を表示の単位の整数で（例 250kt → "463km/h"、単位が kt なら "250kt"）。単位を省くと既定の km/h */
+export function formatSpeedKt(knots: MaybeNumber, unit: SpeedUnit = DEFAULT_UNITS.speed): string {
   if (!isFiniteNumber(knots)) {
     return DASH;
   }
-  const kmh = Math.round(knots * KT_TO_KMH);
-  return `${normalizeZero(kmh)}km/h`;
+  const value = unit === "kt" ? knots : knots * KT_TO_KMH;
+  return `${normalizeZero(Math.round(value))}${SPEED_UNIT_SUFFIX[unit]}`;
 }
 
 /** 水平距離（km）。小数 1 桁に丸めた値が 10 未満なら小数 1 桁、以上なら整数（9.94 → "9.9km"、9.96 → "10km"） */

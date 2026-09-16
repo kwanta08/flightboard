@@ -368,7 +368,10 @@ export type RemoveLocationFocus = "selected-location" | "settings-heading";
 /**
  * ［選択中の地点を削除］の後にフォーカスを移す先（削除後の一覧で決める）。
  * まだ 2 件以上あればボタンは押せるままなので移さない（undefined）。
- * 1 件になるとボタンが無効になり、押したフォーカスが失われるので、選択中の地点のラジオへ移す（移す地点が無ければ見出しへ）
+ * 1 件になるとボタンが無効になり、押したフォーカスが失われるので、選択中の地点のラジオへ移す。
+ * `settings-heading`（移す地点が無い）は**画面の操作からは到達しない防御**で、
+ * `removeLocation` が最後の 1 件を消さない（`canRemoveLocation`）ので削除後の一覧が空になることはない。
+ * それでも、空の一覧を渡されたときにフォーカスを失わせないために残す
  */
 export function focusAfterRemoveLocation(book: LocationBook): RemoveLocationFocus | undefined {
   if (canRemoveLocation(book)) {
