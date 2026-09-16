@@ -5,8 +5,8 @@
 // こうすると停止処理・`unref` が要らず、`server.ts` の `close()` も変えずに済む。
 // 位置の取得元は composeApp が作ったフォールバック提供元と**同じインスタンス**を共有する（429 の休止も共有する）。
 import type { AirportOps, Flight } from "../shared/types.ts";
+import { attachRoutes } from "./adsbdb/attachRoutes.ts";
 import type { RouteInfo } from "./adsbdb/enrichment.ts";
-import { attachRoutes } from "./app.ts";
 import type { AppTracks } from "./app.ts";
 import { TARGET_AIRPORTS } from "./data/airports.ts";
 import type { TargetAirport } from "./data/airports.ts";
@@ -73,7 +73,8 @@ export interface AirportOpsSource {
   /**
    * 取得した機体を集計に流す（観測取得・空港取得のどちらも通る）。
    * 旅客機・貨物機で `seenPosSec ≤ 60` のものだけを見て、滑走路まで決まった進入・出発を 1 hex 1 件で記録する。
-   * 推定を組み立てる前に、`getRoute`（あれば）でキャッシュ済みのルートを付ける（`/api/nearby` の各行と同じ入力にする）
+   * 推定を組み立てる前に、`getRoute`（あれば）でキャッシュ済みのルートを付ける（`/api/nearby` の各行と同じ入力にする）。
+   * 後から届いた route が幾何と食い違って滑走路が外れた機体は、それまでの記録を**取り消す**（W10 MINOR-1）
    */
   record(flights: readonly Flight[], fetchedAt: number): void;
   /**
@@ -115,14 +116,47 @@ export function createAirportOpsSource(options: AirportOpsSourceOptions): Airpor
       if (flight.kind !== "passenger" && flight.kind !== "cargo") continue;
       // 比較を否定形で書き、NaN も除外する（60 秒超の古い位置を集計に入れない）
       if (!(flight.seenPosSec <= MAX_SEEN_POS_SEC)) continue;
-      const entry = toEntry(withCachedRoute(flight), fetchedAt);
-      if (entry === undefined) continue;
+      const routed = withCachedRoute(flight);
+      const entry = toEntry(routed, fetchedAt);
+      if (entry === undefined) {
+        retract(routed, fetchedAt);
+        continue;
+      }
       // 古い取得の結果で新しい記録を上書きしない
       const previous = entries.get(entry.hex);
       if (previous !== undefined && previous.at > entry.at) continue;
       entries.set(entry.hex, entry);
     }
     prune(now());
+  }
+
+  /**
+   * 記録の取り消し（W10 MINOR-1）。最新の観測で **route の裏付けが幾何と食い違って滑走路が外れた**機体は、
+   * それまでの記録を消す。route がまだキャッシュに無いうちに「進入・RWY22」で記録した機体が、
+   * 後から届いた route で行の推定だけ「出発・滑走路なし」に変わり、`airportOps` は 10 分窓が切れるまで
+   * 「RWY22 着陸 1 機・南風運用」を出し続ける、という食い違いを消すため。
+   *
+   * **単に滑走路が決まらなかっただけでは消さない**（`trackDeg` が 1 サンプル欠けた・高度条件を外れた、など）。
+   * 着陸して feed から消えた機体を 10 分数える設計（AC-P2-35）を保つ。
+   * 古い取得の結果で新しい記録を消さないよう、記録より後の観測のときだけ消す
+   */
+  function retract(routed: Flight, fetchedAt: number): void {
+    const hex = routed.hex.toLowerCase();
+    const previous = entries.get(hex);
+    if (previous === undefined || previous.at > fetchedAt) return;
+    if (!routeContradictsGeometry(routed)) return;
+    entries.delete(hex);
+  }
+
+  /**
+   * route の裏付けが幾何と食い違って滑走路が外れたか（AC-P2-16 が効いたか）。
+   * route を外した推定では滑走路が決まるのに、route を付けると決まらない ＝ route が幾何を否定したということ。
+   * route が無い・route を外しても滑走路が決まらない（幾何が unknown・進行方向の欠け）なら false
+   */
+  function routeContradictsGeometry(routed: Flight): boolean {
+    if (routed.route === undefined) return false;
+    const { route: _route, ...withoutRoute } = routed;
+    return decideRunway(withoutRoute) !== undefined;
   }
 
   /**
@@ -144,12 +178,18 @@ export function createAirportOpsSource(options: AirportOpsSourceOptions): Airpor
    * 流し込む範囲は plan の指定どおり（`selectFlights` の前の全機体＝観測半径の外の機体も数える）。
    */
   function toEntry(flight: Flight, at: number): AirportOpsEntry | undefined {
+    const decided = decideRunway(flight);
+    return decided === undefined ? undefined : { hex: flight.hex.toLowerCase(), ...decided, at };
+  }
+
+  /** その機体の推定が「滑走路まで決まった進入・出発」なら、その空港・フェーズ・滑走路。それ以外は undefined */
+  function decideRunway(flight: Flight): Pick<AirportOpsEntry, "icao" | "phase" | "runway"> | undefined {
     const estimate = buildEstimate(flight, ends, airports);
     if (estimate === undefined) return undefined;
     if (estimate.phase !== "arrival" && estimate.phase !== "departure") return undefined;
     const { runway, airport } = estimate;
     if (runway === undefined || airport === undefined) return undefined;
-    return { hex: flight.hex.toLowerCase(), icao: airport.icao, phase: estimate.phase, runway, at };
+    return { icao: airport.icao, phase: estimate.phase, runway };
   }
 
   /** 次に取得する空港（最終取得が最も古く、TTL を超えているもの）。無ければ undefined */

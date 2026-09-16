@@ -423,6 +423,65 @@ describe("createAirportOpsSource: 集計の推定に route を効かせる", () 
     expect(t.source.current()).toHaveLength(1);
   });
 
+  /**
+   * W10 MINOR-1: 機体が観測半径に入った時点でルートがまだキャッシュに無い（サーバー起動直後・adsbdb の 429 休止中・
+   * ルート TTL 切れ直後）と、幾何だけで「RWY22 進入」と記録される。後からルートが届いて幾何と食い違ったら、
+   * その記録は取り消す（残すと行は「出発・滑走路なし」なのに `airportOps` が 10 分間「南風運用」を出し続ける）
+   */
+  describe("ルートが後から届いたときの記録の取り消し", () => {
+    it("route が幾何と食い違って滑走路が外れたら、それまでの記録を消す", () => {
+      const routes: Record<string, RouteInfo> = {};
+      const t = setup({ getRoute: (callsign) => routes[callsign] });
+
+      // 1 回目: ルートが未キャッシュなので幾何だけで「RJTT 22 へ進入」として記録する
+      t.source.record([arrivingFlight("aaa111", endOf("RJTT", "22"))], T0);
+      expect(t.source.current().map((ops) => [ops.icao, ops.landingRunways, ops.basedOn])).toEqual([
+        ["RJTT", ["22"], 1],
+      ]);
+
+      // 2 回目: adsbdb の応答（「羽田発」）が届いた後。行は「出発・滑走路なし」になるので集計からも外す
+      routes.ANA245 = DEPARTS_HANEDA;
+      t.advance(6000);
+      t.source.record([arrivingFlight("aaa111", endOf("RJTT", "22"))], t.now);
+
+      expect(t.source.current()).toEqual([]);
+    });
+
+    it("滑走路が決まらなかっただけ（進行方向が欠けた観測）では記録を消さない", () => {
+      const routes: Record<string, RouteInfo> = {};
+      const t = setup({ getRoute: (callsign) => routes[callsign] });
+
+      t.source.record([arrivingFlight("aaa111", endOf("RJTT", "22"))], T0);
+      expect(t.source.current()).toHaveLength(1);
+
+      // route は届いたが、この観測は幾何が決まらない（trackDeg の欠け）。
+      // 「食い違った」ことは分からないので、記録はそのまま残す（着陸後に feed から消えた機体を 10 分数える設計）
+      routes.ANA245 = DEPARTS_HANEDA;
+      const { trackDeg: _trackDeg, ...noTrack } = arrivingFlight("aaa111", endOf("RJTT", "22"));
+      t.advance(6000);
+      t.source.record([noTrack], t.now);
+
+      expect(t.source.current().map((ops) => [ops.icao, ops.landingRunways, ops.basedOn])).toEqual([
+        ["RJTT", ["22"], 1],
+      ]);
+    });
+
+    it("古い取得の結果では新しい記録を消さない", () => {
+      const routes: Record<string, RouteInfo> = {};
+      const t = setup({ getRoute: (callsign) => routes[callsign] });
+
+      t.advance(6000);
+      t.source.record([arrivingFlight("aaa111", endOf("RJTT", "22"))], t.now);
+      expect(t.source.current()).toHaveLength(1);
+
+      // 記録より前に取った応答（遅れて決着した空港取得など）が食い違っても消さない
+      routes.ANA245 = DEPARTS_HANEDA;
+      t.source.record([arrivingFlight("aaa111", endOf("RJTT", "22"))], T0);
+
+      expect(t.source.current()).toHaveLength(1);
+    });
+  });
+
   it("空港中心の取得で得た機体にも同じ規則を掛ける", async () => {
     const { getRoute } = lookup({ ANA245: DEPARTS_HANEDA });
     const positions = fakePositions(async (q) => ({

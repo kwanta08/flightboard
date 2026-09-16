@@ -1432,6 +1432,34 @@ describe("GET /api/nearby: 行の推定と運用方向の集計が同じ入力�
     expect(body.airportOps).toEqual([HANEDA_LANDING_22]);
   });
 
+  /**
+   * W10 MINOR-1: 機体が観測半径に入った時点ではルートがまだキャッシュに無い（起動直後・adsbdb の 429 休止中・
+   * ルートの TTL 切れ直後）ことがある。そのとき幾何だけで記録した「RWY22 着陸」は、後から届いたルートが
+   * 幾何と食い違ったら取り消す（残すと、行が「出発・滑走路なし」に変わった後も 10 分間「南風運用」が出続ける）
+   */
+  it("ルートが 2 回目の要求で届いて幾何と食い違ったら、1 回目に記録した集計を取り消す", async () => {
+    const t = setupOpsWithRoutes({}); // 1 回目はルートがキャッシュに無い
+
+    const first = await t.get(NEARBY);
+    expect(flightByHex(first.body, "abc123")?.estimate).toEqual(ARRIVAL_ESTIMATE);
+    expect(first.body.airportOps).toEqual([HANEDA_LANDING_22]);
+
+    // adsbdb の応答（RJTT → RJFF＝「羽田発」）が届いた後、位置のキャッシュ（5 秒）を外して 2 回目
+    t.enrichment.routes.set("JAL001", ANA245_ROUTE);
+    t.advance(6000);
+    const second = await t.get(NEARBY);
+    const estimate = flightByHex(second.body, "abc123")?.estimate;
+    expect(estimate?.phase).toBe("departure");
+    expect(estimate?.runway).toBeUndefined();
+    expect(second.body.airportOps).toEqual([]);
+
+    // 3 回目（位置はキャッシュヒット）も空のまま（10 分窓が切れるのを待たない）
+    t.advance(1000);
+    const third = await t.get(NEARBY);
+    expect(flightByHex(third.body, "abc123")?.estimate?.phase).toBe("departure");
+    expect(third.body.airportOps).toEqual([]);
+  });
+
   it("ルートがキャッシュに無ければ従来どおり幾何だけで数え、集計のために adsbdb への照会を増やさない", async () => {
     const t = setupOpsWithRoutes({});
 

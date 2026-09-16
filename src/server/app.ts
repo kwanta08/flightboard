@@ -5,6 +5,8 @@ import type { MiddlewareHandler } from "hono";
 import { haversineKm } from "../shared/geo.ts";
 import type { LatLon } from "../shared/geo.ts";
 import type { AirportOps, ApiError, Flight, FlightDetailResponse, NearbyResponse } from "../shared/types.ts";
+import { attachRoutes, isTrackedKind } from "./adsbdb/attachRoutes.ts";
+import type { AttachRoutesResult } from "./adsbdb/attachRoutes.ts";
 import type { Enrichment, RouteInfo } from "./adsbdb/enrichment.ts";
 import type { AirportOpsSource } from "./airportOpsSource.ts";
 import { buildEstimate } from "./estimate/estimate.ts";
@@ -26,6 +28,14 @@ export const FLIGHT_HEX_PATTERN = /^~?[0-9a-f]{6}$/;
  */
 export { MAX_SEEN_POS_SEC };
 export type { PositionSource };
+
+/**
+ * `adsbdb/attachRoutes.ts` の再エクスポート（互換のため残す）。
+ * ルートの付与は運用方向の集計（`airportOpsSource.ts`）とも共有するので、定義はアプリより下の層にある
+ * （集計が HTTP フレームワークを読み込まないようにする。W10 MINOR-2）
+ */
+export { attachRoutes };
+export type { AttachRoutesResult };
 
 /** アプリが使う adsbdb の付与（`adsbdb/enrichment.ts` の `Enrichment` の一部） */
 export type AppEnrichment = Pick<Enrichment, "getRoute" | "enqueueRoutes" | "getAircraft">;
@@ -132,51 +142,6 @@ export function selectFlights(flights: readonly Flight[], options: SelectFlights
 
 function compareCodeUnits(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
-}
-
-export type AttachRoutesResult = {
-  /** ルートが見つかった機体はコピーに `route`（と `airline`）を付けたもの、それ以外は入力と同じオブジェクト */
-  flights: Flight[];
-  /** ルートが見つからなかった旅客機・貨物機のコールサイン（重複を除き、入力の順） */
-  missingCallsigns: string[];
-};
-
-/**
- * 旅客機・貨物機（コールサインあり）に `getRoute` の結果を付ける（AC-A13）。入力の配列と機体オブジェクトは書き換えない。
- * `other`・コールサインの無い機体はルートを見ず、`missingCallsigns` にも入れない
- */
-export function attachRoutes(
-  flights: readonly Flight[],
-  getRoute: (callsign: string) => RouteInfo | undefined,
-): AttachRoutesResult {
-  const missing = new Set<string>();
-  const result = flights.map((flight) => {
-    const callsign = routeCallsign(flight);
-    if (callsign === undefined) return flight;
-    const info = getRoute(callsign);
-    if (info === undefined) {
-      missing.add(callsign);
-      return flight;
-    }
-    return withRoute(flight, info);
-  });
-  return { flights: result, missingCallsigns: [...missing] };
-}
-
-/** ルートを照会する対象ならコールサインを返す（旅客機・貨物機でコールサインが空でないもの） */
-function routeCallsign(flight: Flight): string | undefined {
-  if (!isTrackedKind(flight.kind)) return undefined;
-  return flight.callsign === undefined || flight.callsign === "" ? undefined : flight.callsign;
-}
-
-function withRoute(flight: Flight, info: RouteInfo): Flight {
-  return info.airline === undefined
-    ? { ...flight, route: info.route }
-    : { ...flight, airline: info.airline, route: info.route };
-}
-
-function isTrackedKind(kind: Flight["kind"]): boolean {
-  return kind === "passenger" || kind === "cargo";
 }
 
 /**
