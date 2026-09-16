@@ -1,0 +1,337 @@
+// BFF の HTTP アプリ（Hono）。ハンドラは配線だけにし、判断は純粋関数（selectFlights・parseNearbyParams など）に置く。
+import { serveStatic } from "@hono/node-server/serve-static";
+import { Hono } from "hono";
+import type { MiddlewareHandler } from "hono";
+import { haversineKm } from "../shared/geo.ts";
+import type { LatLon } from "../shared/geo.ts";
+import type { ApiError, Flight, FlightDetailResponse, NearbyResponse } from "../shared/types.ts";
+import type { Enrichment, RouteInfo } from "./adsbdb/enrichment.ts";
+import { parseNearbyParams } from "./nearbyParams.ts";
+import { cacheKey, createPositionCache } from "./positionCache.ts";
+import type { CachedPositions, PositionCache } from "./positionCache.ts";
+import { UpstreamError } from "./providers/provider.ts";
+import type { PositionSource } from "./providers/provider.ts";
+import type { TrackedFlight, TrackStore } from "./trackStore.ts";
+
+/** 位置の最終受信からこの秒数を超えた機体は返さない（ちょうどは返す） */
+export const MAX_SEEN_POS_SEC = 60;
+
+/** `GET /api/flights/:hex` の hex（小文字化した後に検証する） */
+export const FLIGHT_HEX_PATTERN = /^~?[0-9a-f]{6}$/;
+
+/** `providers/provider.ts` の `PositionSource` の再エクスポート（互換のため残す） */
+export type { PositionSource };
+
+/** アプリが使う adsbdb の付与（`adsbdb/enrichment.ts` の `Enrichment` の一部） */
+export type AppEnrichment = Pick<Enrichment, "getRoute" | "enqueueRoutes" | "getAircraft">;
+
+/** アプリが使う航跡の保持（`trackStore.ts` の `TrackStore` の一部） */
+export type AppTracks = Pick<TrackStore, "record" | "get">;
+
+export type AppOptions = {
+  positions: PositionSource;
+  /** 現在時刻（ms）。既定 `Date.now` */
+  now?: () => number;
+  /**
+   * 位置のキャッシュ。既定は `createApp` が同じ `now` で作り、その `onLoaded` で `tracks.record` と `onPositionsLoaded` を呼ぶ。
+   * 渡す場合は `createApp` と同じ `now` で作ること（経過秒の計算がずれるため）。`onPositionsLoaded`・`tracks` とは同時に指定できない
+   */
+  cache?: PositionCache;
+  /**
+   * 位置をキャッシュミスで取得して保存した直後に 1 回呼ぶ（既定のキャッシュの `onLoaded`。キャッシュヒット・共有した要求・失敗では呼ばない）。
+   * `tracks` もあれば航跡の記録の後に呼ぶ。例外は握りつぶさず、その取得を待っている要求に伝わる。
+   * `cache` と同時に指定すると `createApp` が `TypeError` を投げる
+   */
+  onPositionsLoaded?: (value: CachedPositions) => void;
+  /**
+   * adsbdb のルート・機体情報。あれば `/api/nearby` の旅客機・貨物機にキャッシュ済みのルートを付け、未取得のコールサインを積む（待たない）。
+   * `/api/flights/:hex` ではルートに加えて機体情報を照会して付ける
+   */
+  enrichment?: AppEnrichment;
+  /**
+   * 航跡の保持。あれば位置をキャッシュミスで取得するたびに取得した全機体を `record` する（例外はログに出して握りつぶす）。
+   * 無ければ `/api/flights/:hex` は常に 404。`cache` と同時に指定すると `createApp` が `TypeError` を投げる
+   */
+  tracks?: AppTracks;
+  /**
+   * ビルド済みクライアント（`dist/client`）のディレクトリ。指定したときだけ、`/api` と `/api/` 以下を除く GET に静的ファイルを配信する
+   * （`/` は `index.html`、見つからなければ `text/plain` の 404）。未指定なら静的配信を登録せず、未定義のパスはすべて JSON の 404
+   */
+  staticRoot?: string;
+};
+
+export type SelectFlightsOptions = {
+  /** 検索中心 */
+  center: LatLon;
+  /** この水平距離（km）以下の機体だけを返す */
+  radiusKm: number;
+  /** 返す種類 */
+  kinds: ReadonlySet<Flight["kind"]>;
+  /** 位置を取得してから応答時点までの経過秒。各機体の `seenPosSec` に足す */
+  ageSec: number;
+};
+
+// 利用者向けのエラーメッセージ（上流の応答本文・URL・例外の中身は含めない）
+const MESSAGE_UPSTREAM_FAILED = "位置情報の提供元から取得できませんでした。しばらくしてから再度お試しください";
+const MESSAGE_INTERNAL_ERROR = "サーバー内部でエラーが発生しました";
+const MESSAGE_NOT_FOUND = "指定された API は存在しません";
+const MESSAGE_INVALID_HEX = "hex は 6 桁の 16 進（先頭に ~ を付けてもよい）で指定してください";
+const MESSAGE_FLIGHT_NOT_FOUND = "指定された機体の情報はありません";
+const MESSAGE_STATIC_NOT_FOUND = "ページが見つかりません";
+
+/** API のパス（`/api` ちょうどと `/api/` で始まるパス）。静的配信せず、未定義なら JSON の 404 を返す */
+function isApiPath(path: string): boolean {
+  return path === "/api" || path.startsWith("/api/");
+}
+
+/**
+ * 応答に載せる機体を作る（AC-A8・AC-A9）。入力の配列と機体オブジェクトは書き換えない。
+ * 各機体を浅くコピーして `seenPosSec += ageSec` → `seenPosSec > 60` を除外 → `kinds` に無い種類を除外
+ * → 検索中心からの水平距離が `radiusKm` を超える機体を除外 → 水平距離の昇順（同距離は hex の昇順）。
+ * 浅いコピーなので、入れ子のオブジェクト（`position` など）は入力と共有する
+ */
+export function selectFlights(flights: readonly Flight[], options: SelectFlightsOptions): Flight[] {
+  const { center, radiusKm, kinds, ageSec } = options;
+  const selected: { flight: Flight; distanceKm: number }[] = [];
+
+  for (const original of flights) {
+    const flight: Flight = { ...original, seenPosSec: original.seenPosSec + ageSec };
+    // 比較を否定形で書き、NaN も除外する
+    if (!(flight.seenPosSec <= MAX_SEEN_POS_SEC)) continue;
+    if (!kinds.has(flight.kind)) continue;
+    const distanceKm = haversineKm(center, flight.position);
+    if (!(distanceKm <= radiusKm)) continue;
+    selected.push({ flight, distanceKm });
+  }
+
+  selected.sort((a, b) => a.distanceKm - b.distanceKm || compareCodeUnits(a.flight.hex, b.flight.hex));
+  return selected.map((s) => s.flight);
+}
+
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+export type AttachRoutesResult = {
+  /** ルートが見つかった機体はコピーに `route`（と `airline`）を付けたもの、それ以外は入力と同じオブジェクト */
+  flights: Flight[];
+  /** ルートが見つからなかった旅客機・貨物機のコールサイン（重複を除き、入力の順） */
+  missingCallsigns: string[];
+};
+
+/**
+ * 旅客機・貨物機（コールサインあり）に `getRoute` の結果を付ける（AC-A13）。入力の配列と機体オブジェクトは書き換えない。
+ * `other`・コールサインの無い機体はルートを見ず、`missingCallsigns` にも入れない
+ */
+export function attachRoutes(
+  flights: readonly Flight[],
+  getRoute: (callsign: string) => RouteInfo | undefined,
+): AttachRoutesResult {
+  const missing = new Set<string>();
+  const result = flights.map((flight) => {
+    const callsign = routeCallsign(flight);
+    if (callsign === undefined) return flight;
+    const info = getRoute(callsign);
+    if (info === undefined) {
+      missing.add(callsign);
+      return flight;
+    }
+    return withRoute(flight, info);
+  });
+  return { flights: result, missingCallsigns: [...missing] };
+}
+
+/** ルートを照会する対象ならコールサインを返す（旅客機・貨物機でコールサインが空でないもの） */
+function routeCallsign(flight: Flight): string | undefined {
+  if (!isTrackedKind(flight.kind)) return undefined;
+  return flight.callsign === undefined || flight.callsign === "" ? undefined : flight.callsign;
+}
+
+function withRoute(flight: Flight, info: RouteInfo): Flight {
+  return info.airline === undefined
+    ? { ...flight, route: info.route }
+    : { ...flight, airline: info.airline, route: info.route };
+}
+
+function isTrackedKind(kind: Flight["kind"]): boolean {
+  return kind === "passenger" || kind === "cargo";
+}
+
+/**
+ * 保持している機体を詳細 API で返せるか判定し、返す機体のコピーを作る（AC-A16・M2-3）。保持している値は書き換えない。
+ * `seenPosSec` に保持してからの経過秒を足し、60 秒を超える・旅客機でも貨物機でもないなら undefined
+ */
+export function selectTrackedFlight(tracked: Pick<TrackedFlight, "flight">, ageSec: number): Flight | undefined {
+  const flight: Flight = { ...tracked.flight, seenPosSec: tracked.flight.seenPosSec + ageSec };
+  if (!(flight.seenPosSec <= MAX_SEEN_POS_SEC)) return undefined;
+  if (!isTrackedKind(flight.kind)) return undefined;
+  return flight;
+}
+
+/** 取得時刻から応答時点までの経過秒。時計が戻った場合に負にならないよう 0 で下支えする */
+function elapsedSec(now: number, fetchedAt: number): number {
+  return Math.max(0, (now - fetchedAt) / 1000);
+}
+
+/** 詳細 API の応答。`updatedAt`・`track` は `flight` を作ったのと同じ保持値から取る */
+function flightDetail(tracked: Pick<TrackedFlight, "fetchedAt" | "points">, flight: Flight): FlightDetailResponse {
+  return { updatedAt: new Date(tracked.fetchedAt).toISOString(), flight, track: tracked.points };
+}
+
+export function createApp(options: AppOptions): Hono {
+  const { positions, onPositionsLoaded, enrichment, tracks, staticRoot } = options;
+  const now = options.now ?? Date.now;
+  // 片方を黙って無視しないよう、同時指定は作成時に拒否する
+  if (options.cache !== undefined && onPositionsLoaded !== undefined) {
+    throw new TypeError("createApp: cache and onPositionsLoaded cannot be specified together");
+  }
+  if (options.cache !== undefined && tracks !== undefined) {
+    throw new TypeError("createApp: cache and tracks cannot be specified together");
+  }
+
+  const onLoaded =
+    tracks === undefined && onPositionsLoaded === undefined
+      ? undefined
+      : (value: CachedPositions): void => {
+          if (tracks !== undefined) {
+            // 航跡の記録に失敗しても位置の応答は返す（M-W5）
+            try {
+              tracks.record(value.flights, value.fetchedAt);
+            } catch (error) {
+              console.error("[BFF] 航跡の記録に失敗しました:", error);
+            }
+          }
+          onPositionsLoaded?.(value);
+        };
+  const cache = options.cache ?? createPositionCache({ now, onLoaded });
+
+  /** 未取得のコールサインを積む。同期の例外で応答を失敗させない */
+  function enqueueMissingRoutes(target: AppEnrichment, callsigns: readonly string[]): void {
+    if (callsigns.length === 0) return;
+    try {
+      target.enqueueRoutes(callsigns);
+    } catch (error) {
+      console.error("[BFF] ルート照会の登録に失敗しました:", error);
+    }
+  }
+
+  /**
+   * 機体情報の照会を始め、決着を待つ Promise を返す。同期の例外・reject はログに出して undefined にする
+   * （返す Promise は reject しないので、待つ前に応答が失敗しても未処理の reject を残さない）
+   */
+  function startAircraftLookup(target: AppEnrichment, hex: string): Promise<Flight["aircraft"]> {
+    const onError = (error: unknown): undefined => {
+      console.error("[GET /api/flights/:hex] 機体情報の取得に失敗しました:", error);
+      return undefined;
+    };
+    try {
+      return target.getAircraft(hex).catch(onError);
+    } catch (error) {
+      return Promise.resolve(onError(error));
+    }
+  }
+
+  /** 保持している機体を取り、応答時点の経過秒で判定する（M2-3）。保持していない・返せないなら undefined */
+  function findTrackedFlight(hex: string): { tracked: TrackedFlight; flight: Flight } | undefined {
+    const tracked = tracks?.get(hex);
+    if (tracked === undefined) return undefined;
+    const flight = selectTrackedFlight(tracked, elapsedSec(now(), tracked.fetchedAt));
+    return flight === undefined ? undefined : { tracked, flight };
+  }
+
+  const app = new Hono();
+
+  app.get("/api/nearby", async (c) => {
+    const parsed = parseNearbyParams(c.req.query());
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error } satisfies ApiError, 400);
+    }
+    const { lat, lon, radiusKm, radiusNm, kinds } = parsed.value;
+
+    let loaded: CachedPositions;
+    try {
+      loaded = await cache.get(cacheKey(lat, lon, radiusNm), () => positions.fetchNearby({ lat, lon, radiusNm }));
+    } catch (error) {
+      if (!(error instanceof UpstreamError)) throw error; // app.onError で 500
+      console.error(`[GET /api/nearby] 位置の取得に失敗しました: ${error.message}`);
+      return c.json({ error: MESSAGE_UPSTREAM_FAILED } satisfies ApiError, 502);
+    }
+
+    const ageSec = elapsedSec(now(), loaded.fetchedAt);
+    let flights = selectFlights(loaded.flights, { center: { lat, lon }, radiusKm, kinds, ageSec });
+    if (enrichment !== undefined) {
+      // キャッシュにあるルートだけを付け、無いものはバックグラウンドの照会に積む（adsbdb を待たない）
+      const routed = attachRoutes(flights, (callsign) => enrichment.getRoute(callsign));
+      flights = routed.flights;
+      enqueueMissingRoutes(enrichment, routed.missingCallsigns);
+    }
+
+    const body: NearbyResponse = {
+      updatedAt: new Date(loaded.fetchedAt).toISOString(),
+      source: loaded.source,
+      flights,
+      airportOps: [],
+    };
+    return c.json(body, 200);
+  });
+
+  app.get("/api/flights/:hex", async (c) => {
+    const hex = c.req.param("hex").toLowerCase();
+    if (!FLIGHT_HEX_PATTERN.test(hex)) {
+      return c.json({ error: MESSAGE_INVALID_HEX } satisfies ApiError, 400);
+    }
+
+    const held = findTrackedFlight(hex);
+    if (held === undefined) {
+      return c.json({ error: MESSAGE_FLIGHT_NOT_FOUND } satisfies ApiError, 404);
+    }
+    if (enrichment === undefined) {
+      return c.json(flightDetail(held.tracked, held.flight), 200);
+    }
+
+    // 機体情報の照会を先に始めてから未取得のルートを積む（機体情報の照会をルート照会の後ろに並べない。AC-A14）
+    const aircraftLookup = startAircraftLookup(enrichment, hex);
+    const getRoute = (callsign: string): RouteInfo | undefined => enrichment.getRoute(callsign);
+    enqueueMissingRoutes(enrichment, attachRoutes([held.flight], getRoute).missingCallsigns);
+
+    // 機体情報は照会を待つ。失敗しても機体情報無しで返す
+    const aircraft = await aircraftLookup;
+
+    // 待っている間に /api/nearby が同じ機体の新しい位置を記録していることがあるので、保持している値を取り直し、
+    // 待っている間の経過を含めた応答時点の経過秒で判定し直す（M2-3）。ルートは取り直した機体に応答時点のキャッシュから付ける
+    const latest = findTrackedFlight(hex);
+    if (latest === undefined) {
+      return c.json({ error: MESSAGE_FLIGHT_NOT_FOUND } satisfies ApiError, 404);
+    }
+    let flight = attachRoutes([latest.flight], getRoute).flights[0]!;
+    if (aircraft !== undefined) flight = { ...flight, aircraft };
+    return c.json(flightDetail(latest.tracked, flight), 200);
+  });
+
+  if (staticRoot !== undefined) {
+    // API のルートより後に登録し、/api/ 以下は同名のファイルがあっても静的配信しない（未定義なら notFound の JSON 404）
+    const serveClient = serveStatic({ root: staticRoot });
+    const serveClientOutsideApi: MiddlewareHandler = async (c, next) => {
+      if (isApiPath(c.req.path)) {
+        await next();
+        return;
+      }
+      return serveClient(c, next);
+    };
+    app.get("*", serveClientOutsideApi);
+  }
+
+  // /api/ 以下と、静的配信しないときの未定義パスは JSON の ApiError。静的配信で見つからないパスは text/plain（M-A6）
+  app.notFound((c) =>
+    staticRoot !== undefined && !isApiPath(c.req.path)
+      ? c.text(MESSAGE_STATIC_NOT_FOUND, 404)
+      : c.json({ error: MESSAGE_NOT_FOUND } satisfies ApiError, 404),
+  );
+
+  app.onError((error, c) => {
+    console.error("[BFF] 予期しないエラー:", error);
+    return c.json({ error: MESSAGE_INTERNAL_ERROR } satisfies ApiError, 500);
+  });
+
+  return app;
+}

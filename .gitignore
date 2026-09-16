@@ -1,0 +1,7 @@
+.claude/loop/
+node_modules/
+dist/
+*.sqlite
+.env
+__pycache__/
+*.pyc

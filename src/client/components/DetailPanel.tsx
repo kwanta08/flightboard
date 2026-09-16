@@ -1,0 +1,109 @@
+// 機体の詳細パネル（AC-B12・AC-B8・AC-B13）。地図ペインの右側に重ねて出す（フォーカスは奪わない）。
+// 表示の判断と文言は lib/detailView.ts・lib/detailState.ts が決め、ここは描画と閉じる操作の受け渡しだけを行う。
+import { useMemo, type KeyboardEvent } from "react";
+import type { DetailState } from "../lib/detailState.ts";
+import {
+  DETAIL_CLOSE_LABEL,
+  DETAIL_CLOSE_TEXT,
+  DETAIL_PANEL_LABEL,
+  detailPanelContent,
+  isCloseKey,
+  ROUTE_PROGRESS_LABEL,
+  type DetailRoute,
+  type DetailView,
+} from "../lib/detailView.ts";
+import type { Observer } from "../lib/flightRows.ts";
+
+type DetailPanelProps = {
+  /** 選択中の機体の詳細の取得状態（useFlightDetail） */
+  state: DetailState;
+  /** 観測地点（自分との関係の計算に使う） */
+  observer: Observer;
+  /** 閉じるボタンとパネル内の Esc（詳細を閉じる＝選択を解除する） */
+  onClose(): void;
+};
+
+/** 出発地 → 到着地、進み具合、注記 */
+function RouteBlock({ route }: { route: DetailRoute }) {
+  return (
+    <div className="detail-route">
+      <p className="detail-route-airports">
+        <span className="detail-route-airport">{route.originLabel}</span>
+        <span className="detail-route-arrow"> → </span>
+        <span className="detail-route-airport">{route.destinationLabel}</span>
+      </p>
+      {route.progress !== undefined ? (
+        <div className="detail-route-progress">
+          <progress className="detail-progress" max={1} value={route.progress} aria-label={ROUTE_PROGRESS_LABEL}>
+            {route.progressText}
+          </progress>
+          <span className="detail-progress-text">{route.progressText}</span>
+        </div>
+      ) : null}
+      <p className="detail-note">{route.note}</p>
+    </div>
+  );
+}
+
+/** 写真・ルート・各区分 */
+function DetailViewBody({ view }: { view: DetailView }) {
+  return (
+    <>
+      {view.photo !== undefined ? (
+        <figure className="detail-photo">
+          <img
+            className="detail-photo-image"
+            src={view.photo.src}
+            alt={view.photo.alt}
+            loading="lazy"
+            referrerPolicy="no-referrer"
+          />
+          <figcaption className="detail-photo-credit">{view.photo.credit}</figcaption>
+        </figure>
+      ) : null}
+      {view.route !== undefined ? <RouteBlock route={view.route} /> : null}
+      {view.sections.map((section) => (
+        <section key={section.title} className="detail-section">
+          <h3 className="detail-section-title">{section.title}</h3>
+          <dl className="detail-list">
+            {section.items.map((item) => (
+              <div key={item.label} className="detail-item">
+                <dt className="detail-item-label">{item.label}</dt>
+                <dd className="detail-item-value">{item.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      ))}
+    </>
+  );
+}
+
+export function DetailPanel({ state, observer, onClose }: DetailPanelProps) {
+  const content = useMemo(() => detailPanelContent(state, observer), [state, observer]);
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (!isCloseKey(event.key)) return;
+    event.preventDefault();
+    onClose();
+  };
+
+  return (
+    <aside className="detail-panel" aria-label={DETAIL_PANEL_LABEL} onKeyDown={handleKeyDown}>
+      <header className="detail-header">
+        <div className="detail-heading">
+          <h2 className="detail-title">{content.title}</h2>
+          {content.subtitle !== undefined ? <p className="detail-subtitle">{content.subtitle}</p> : null}
+        </div>
+        <button type="button" className="detail-close" aria-label={DETAIL_CLOSE_LABEL} onClick={onClose}>
+          {DETAIL_CLOSE_TEXT}
+        </button>
+      </header>
+      <div className="detail-body">
+        {content.message !== undefined ? <p className="detail-message">{content.message}</p> : null}
+        {content.notice !== undefined ? <p className="detail-notice">{content.notice}</p> : null}
+        {content.view !== undefined ? <DetailViewBody view={content.view} /> : null}
+      </div>
+    </aside>
+  );
+}

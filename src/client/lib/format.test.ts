@@ -1,0 +1,272 @@
+import { describe, expect, it } from "vitest";
+import {
+  airportShortLabel,
+  DASH,
+  finiteOrUndefined,
+  formatAltitudeFt,
+  formatAltitudeM,
+  formatBearing,
+  formatDistanceKm,
+  formatElevationDeg,
+  formatSecondsAgo,
+  formatSpeedKt,
+  formatTrend,
+  formatVerticalRateFpm,
+  isFiniteNumber,
+  nonEmpty,
+  normalizeZero,
+  verticalTrend,
+} from "./format.ts";
+
+describe("DASH", () => {
+  it("値の無い項目は「—」", () => {
+    expect(DASH).toBe("—");
+  });
+});
+
+describe("formatAltitudeFt / formatAltitudeM（ft → m、10m 単位に丸めて桁区切り）", () => {
+  it.each([
+    [6600, "2,010m"], // 6600 × 0.3048 = 2011.68 → 2010
+    [21654, "6,600m"], // 21654 × 0.3048 = 6600.14 → 6600（S-02 の「6,600m」）
+    [3000, "910m"], // 914.4 → 910
+    [0, "0m"],
+  ])("%s ft → %s", (feet, expected) => {
+    expect(formatAltitudeFt(feet)).toBe(expected);
+  });
+
+  it.each([
+    [914.4, "910m"],
+    [12345, "12,350m"], // 1234.5 → 1235 → 12350
+    [1004.9, "1,000m"],
+    [-304.8, "-300m"],
+  ])("%s m → %s", (meters, expected) => {
+    expect(formatAltitudeM(meters)).toBe(expected);
+  });
+
+  it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY])("%s → 「—」", (value) => {
+    expect(formatAltitudeFt(value)).toBe("—");
+    expect(formatAltitudeM(value)).toBe("—");
+  });
+
+  it("-0 に丸まる負の小さな値は「0m」（-4m、-10ft = -3.048m）", () => {
+    expect(formatAltitudeM(-4)).toBe("0m");
+    expect(formatAltitudeFt(-10)).toBe("0m");
+  });
+});
+
+describe("formatSpeedKt（kt → km/h の整数）", () => {
+  it.each([
+    [250, "463km/h"], // 250 × 1.852 = 463
+    [480, "889km/h"], // 888.96 → 889
+    [0, "0km/h"],
+  ])("%s kt → %s", (knots, expected) => {
+    expect(formatSpeedKt(knots)).toBe(expected);
+  });
+
+  it.each([null, undefined, Number.NaN])("%s → 「—」", (value) => {
+    expect(formatSpeedKt(value)).toBe("—");
+  });
+
+  it("-0 に丸まる負の小さな値は「0km/h」（-0.2kt = -0.37km/h）", () => {
+    expect(formatSpeedKt(-0.2)).toBe("0km/h");
+  });
+});
+
+describe("formatDistanceKm（10km 未満は小数 1 桁、以上は整数）", () => {
+  it.each([
+    [9.94, "9.9km"],
+    [9.96, "10km"], // 小数 1 桁に丸めると 10.0 → 整数表示
+    [10, "10km"],
+    [12.4, "12km"],
+    [37.79, "38km"],
+    [0.04, "0.0km"],
+  ])("%s km → %s", (km, expected) => {
+    expect(formatDistanceKm(km)).toBe(expected);
+  });
+
+  it.each([null, undefined, Number.NaN])("%s → 「—」", (value) => {
+    expect(formatDistanceKm(value)).toBe("—");
+  });
+
+  it("-0 に丸まる負の小さな値は「0.0km」（-0.04km）", () => {
+    expect(formatDistanceKm(-0.04)).toBe("0.0km");
+  });
+});
+
+describe("verticalTrend（±200fpm が境界、±200 ちょうどは水平）", () => {
+  it.each([
+    [200, "level"],
+    [201, "climb"],
+    [-200, "level"],
+    [-201, "descend"],
+    [0, "level"],
+    [2500, "climb"],
+    [-704, "descend"],
+  ] as const)("%s fpm → %s", (fpm, expected) => {
+    expect(verticalTrend(fpm)).toBe(expected);
+  });
+
+  it.each([undefined, null, Number.NaN])("%s → undefined（記号を出さない）", (value) => {
+    expect(verticalTrend(value)).toBeUndefined();
+  });
+});
+
+describe("formatTrend（記号と文字の両方）", () => {
+  it.each([
+    ["climb", "▲ 上昇"],
+    ["descend", "▼ 下降"],
+    ["level", "― 水平"],
+  ] as const)("%s → %s", (trend, expected) => {
+    expect(formatTrend(trend)).toBe(expected);
+  });
+
+  it("区分が無ければ undefined", () => {
+    expect(formatTrend(undefined)).toBeUndefined();
+  });
+
+  it("昇降率から区分を経て文字にする（201 → 上昇、-201 → 下降、200 → 水平）", () => {
+    expect(formatTrend(verticalTrend(201))).toBe("▲ 上昇");
+    expect(formatTrend(verticalTrend(-201))).toBe("▼ 下降");
+    expect(formatTrend(verticalTrend(200))).toBe("― 水平");
+  });
+});
+
+describe("formatVerticalRateFpm（fpm → m/分 の整数、正は + 付き）", () => {
+  it.each([
+    [1000, "+305m/分"], // 304.8 → 305
+    [-1000, "-305m/分"],
+    [-704, "-215m/分"], // -214.58 → -215
+    [0, "0m/分"],
+  ])("%s fpm → %s", (fpm, expected) => {
+    expect(formatVerticalRateFpm(fpm)).toBe(expected);
+  });
+
+  it.each([null, undefined, Number.NaN])("%s → 「—」", (value) => {
+    expect(formatVerticalRateFpm(value)).toBe("—");
+  });
+
+  it("-0 に丸まる負の小さな値は「0m/分」（-1fpm = -0.3048m/分）", () => {
+    expect(formatVerticalRateFpm(-1)).toBe("0m/分");
+  });
+});
+
+describe("formatBearing（16 方位の日本語）", () => {
+  it.each([
+    [0, "北"],
+    [200.4, "南南西"],
+    [90, "東"],
+    [348.75, "北"],
+  ])("%s° → %s", (deg, expected) => {
+    expect(formatBearing(deg)).toBe(expected);
+  });
+
+  it("非有限（NaN・Infinity）と値無し（undefined・null）で「—」（どれも bearingToJa16 が undefined を返す）", () => {
+    expect(formatBearing(Number.NaN)).toBe("—");
+    expect(formatBearing(Number.POSITIVE_INFINITY)).toBe("—");
+    expect(formatBearing(undefined)).toBe("—");
+    expect(formatBearing(null)).toBe("—");
+  });
+});
+
+describe("formatElevationDeg（10° 未満は 0.1° 単位で負の方向に切り捨てて小数 1 桁、10° 以上は整数に丸める）", () => {
+  it.each([
+    [9.99, "9.9°"],
+    [10, "10°"],
+    [10.4, "10°"],
+    [0, "0.0°"],
+    [-0.01, "-0.1°"],
+    [-0.4, "-0.4°"],
+    [1.19, "1.1°"],
+    [45.6, "46°"],
+    [9.5, "9.5°"],
+    [45, "45°"],
+    [-1.4, "-1.4°"],
+    [-2.6, "-2.6°"],
+  ])("%s → %s", (deg, expected) => {
+    expect(formatElevationDeg(deg)).toBe(expected);
+  });
+
+  it("-0 は「0.0°」（「-0.0°」にしない）", () => {
+    expect(formatElevationDeg(-0)).toBe("0.0°");
+  });
+
+  it.each([null, undefined, Number.NaN])("%s → 「—」", (value) => {
+    expect(formatElevationDeg(value)).toBe("—");
+  });
+});
+
+describe("formatSecondsAgo（切り捨て、負は 0）", () => {
+  it.each([
+    [3.9, "3 秒前"],
+    [0, "0 秒前"],
+    [59.999, "59 秒前"],
+    [-2, "0 秒前"],
+    [-0.5, "0 秒前"],
+  ])("%s 秒 → %s", (seconds, expected) => {
+    expect(formatSecondsAgo(seconds)).toBe(expected);
+  });
+
+  it("値が無ければ「—」", () => {
+    expect(formatSecondsAgo(undefined)).toBe("—");
+    expect(formatSecondsAgo(Number.NaN)).toBe("—");
+  });
+
+  it("-0 秒は「0 秒前」", () => {
+    expect(formatSecondsAgo(-0)).toBe("0 秒前");
+  });
+});
+
+describe("normalizeZero（-0 を 0 に）", () => {
+  it("-0 → +0、+0 → +0", () => {
+    expect(Object.is(normalizeZero(-0), 0)).toBe(true);
+    expect(Object.is(normalizeZero(0), 0)).toBe(true);
+  });
+
+  it("0 以外はそのまま", () => {
+    expect(normalizeZero(-3.5)).toBe(-3.5);
+    expect(normalizeZero(12)).toBe(12);
+  });
+});
+
+describe("isFiniteNumber / finiteOrUndefined / nonEmpty", () => {
+  it.each([
+    [0, true],
+    [-1.5, true],
+    [Number.NaN, false],
+    [Number.POSITIVE_INFINITY, false],
+    [Number.NEGATIVE_INFINITY, false],
+    [null, false],
+    [undefined, false],
+  ])("isFiniteNumber(%s) → %s", (value, expected) => {
+    expect(isFiniteNumber(value)).toBe(expected);
+    expect(finiteOrUndefined(value)).toBe(expected ? value : undefined);
+  });
+
+  it.each([
+    [" JAL123 ", "JAL123"],
+    ["ANA5", "ANA5"],
+    ["   ", undefined],
+    ["", undefined],
+    [undefined, undefined],
+  ])("nonEmpty(%j) → %s", (text, expected) => {
+    expect(nonEmpty(text)).toBe(expected);
+  });
+});
+
+describe("airportShortLabel（IATA（無ければ ICAO）＋空白＋都市名）", () => {
+  it("IATA と都市名 → 「HND Tokyo」", () => {
+    expect(airportShortLabel({ icao: "RJTT", iata: "HND", municipality: "Tokyo" })).toBe("HND Tokyo");
+  });
+
+  it("IATA が無ければ ICAO → 「RJTT Tokyo」", () => {
+    expect(airportShortLabel({ icao: "RJTT", municipality: "Tokyo" })).toBe("RJTT Tokyo");
+  });
+
+  it("都市名が無ければコードのみ → 「HND」", () => {
+    expect(airportShortLabel({ icao: "RJTT", iata: "HND" })).toBe("HND");
+  });
+
+  it("空文字の IATA・都市名は無いものとして扱う", () => {
+    expect(airportShortLabel({ icao: "RJTT", iata: "", municipality: "  " })).toBe("RJTT");
+  });
+});
