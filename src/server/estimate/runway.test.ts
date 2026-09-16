@@ -308,6 +308,59 @@ describe("AC-P2-23: 採点 = 方位のズレ + 距離km × 0.3", () => {
 });
 
 /**
+ * **並行滑走路では、延長線上に正確に乗った機体でも隣の端が選ばれる**
+ * （review-code-W2-2 の MINOR-1。plan v9 の §「既知の妥協 2」に記録済み）。
+ *
+ * 原因は spec §10.2 の採点式 `方位のズレ + 距離km × 0.3`（AC-P2-23）に
+ * **横方向のずれ（中心線からの距離）が入っていない**こと。並行滑走路の端は滑走路軸の方向にも
+ * 0.2〜0.5km ずれて並ぶので、距離の項の差が真方位差（0.02° 程度）を常に上回る。
+ *
+ * **これは仕様 §10.2 の採点式に忠実な結果であり、望ましい挙動ではない。**
+ * ここでは現在の挙動を固定するだけで、実装は変えない（採点式は仕様から直接引いたものなので、
+ * 実装側で独断に変えると仕様と実装のどちらが正かが分からなくなる）。
+ * **採点式を改訂したらこのテストは意図的に落ちる。そのときは plan v9 の §「既知の妥協 2」を見直すこと。**
+ *
+ * 機体の合成に使うのは bearingDeg / haversineKm / destinationPoint だけ
+ * （実装側の関数を経由すると自己参照になり、採点が退行しても緑のまま素通りする）。
+ */
+describe("MINOR-1: 並行滑走路では隣の端が選ばれる（現在の挙動の固定。望ましい挙動ではない）", () => {
+  it.each([
+    ["RJTT", "16L", "進入", 30, "16R", 8.946, 9.0],
+    ["RJTT", "34L", "進入", 30, "34R", 8.857, 9.0],
+    ["RJAA", "34R", "進入", 30, "34L", 8.871, 9.0],
+    ["RJTT", "34R", "出発", 5, "34L", 1.437, 1.5],
+  ] as const)(
+    "%s %s の延長線上（%s・%skm）では %s が選ばれる（採点 %s < %s）",
+    (icao, ident, phase, distanceKm, chosenIdent, chosenScore, intendedScore) => {
+      const end = endOf(icao, ident);
+      const candidates =
+        phase === "進入"
+          ? arrivalCandidates(approachingAircraft(end, { distanceKm }))
+          : departureCandidates(departingAircraft(end, { distanceKm }));
+
+      // 機体は ident の中心線にぴったり乗っている（ズレ 0°・距離ちょうど）が、選ばれるのは隣の端
+      const intended = candidates.find((candidate) => candidate.end.icao === icao && candidate.end.ident === ident);
+      expect(intended?.headingOffDeg).toBeCloseTo(0, 3);
+      expect(intended?.distanceKm).toBeCloseTo(distanceKm, 3);
+      expect(intended?.score).toBeCloseTo(intendedScore, 2);
+
+      const chosen = candidates[0];
+      expect(chosen?.end.icao).toBe(icao);
+      expect(chosen?.end.ident).toBe(chosenIdent);
+      expect(chosen?.score).toBeCloseTo(chosenScore, 2);
+
+      // 負けている理由は距離の項。隣の端の方が真方位はわずかにずれている（1.1° 未満）が、機体に近い
+      expect(chosen!.headingOffDeg).toBeGreaterThan(intended!.headingOffDeg);
+      expect(chosen!.headingOffDeg).toBeLessThan(1.1);
+      expect(chosen!.distanceKm).toBeLessThan(intended!.distanceKm);
+      expect((intended!.distanceKm - chosen!.distanceKm) * SCORE_DISTANCE_WEIGHT).toBeGreaterThan(
+        chosen!.headingOffDeg - intended!.headingOffDeg,
+      );
+    },
+  );
+});
+
+/**
  * AC-P2-25 / 26 / 27: 公示された 5 ケースの判別テスト。
  *
  * **入力は合成であり、実測の生値ではない。** docs/spec.md §6.2-6 / §6.5 の表に残っているのは

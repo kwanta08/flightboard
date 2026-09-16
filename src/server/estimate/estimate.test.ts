@@ -100,10 +100,16 @@ function approaching(
   };
 }
 
-/** 離陸方向の延長線上に出発機を合成する */
-function departing(end: RunwayEnd, args: { distanceKm: number }): { position: LatLon; trackDeg: number } {
+/** 離陸方向の延長線上に出発機を合成する（headingOffDeg で離陸後の旋回を表す） */
+function departing(
+  end: RunwayEnd,
+  args: { distanceKm: number; headingOffDeg?: number },
+): { position: LatLon; trackDeg: number } {
   const bearing = trueBearingOf(end);
-  return { position: destinationPoint(end, bearing, args.distanceKm), trackDeg: normalizeDeg(bearing) };
+  return {
+    position: destinationPoint(end, bearing, args.distanceKm),
+    trackDeg: normalizeDeg(bearing + (args.headingOffDeg ?? 0)),
+  };
 }
 
 /** 空港中心から方位 fromBearing・距離 distanceKm の位置に、空港へ真っ直ぐ向かう機体を置く */
@@ -481,6 +487,60 @@ describe("AC-P2-25: 公示された 4 ケースの推定（合成入力）", () 
     );
     expect(estimate?.runway).toBeUndefined();
     expect(confidenceLabel(estimate?.confidence ?? 0, estimate?.runway !== undefined)).toBeUndefined();
+  });
+});
+
+/**
+ * review-code-W2-2 の MINOR-2 の回帰。**修正前は離陸直後の機体が「成田 出発」になっていた。**
+ *
+ * 羽田 22 を離陸して 1km・高度 800ft・+1500fpm で上昇中の機体は、空港中心（ARP）から見ると
+ * まだ前方（方位差約 79°）にあるため「羽田から離脱中」と読めず、60km 先の成田が採られていた。
+ * phase.ts の基準点を滑走路端にしたので、旋回の向きによらず羽田になる（詳しくは phase.test.ts）。
+ */
+describe("離陸直後の推定（MINOR-2 の回帰）", () => {
+  const justAirborne = (headingOffDeg: number, route?: { origin: string; destination: string }): Flight =>
+    flight({
+      ...departing(endOf("RJTT", "22"), { distanceKm: 1, headingOffDeg }),
+      altitudeBaroFt: 800,
+      verticalRateFpm: 1500,
+      ...(route ? { route } : {}),
+    });
+
+  it.each([
+    ["中心線上", 0],
+    ["左 25° 旋回", -25],
+    ["右 25° 旋回", 25],
+  ] as const)("%s でも空港は羽田（成田にならない）", (_name, headingOffDeg) => {
+    const estimate = buildEstimate(justAirborne(headingOffDeg));
+    expect(estimate?.phase).toBe("departure");
+    expect(estimate?.airport).toEqual({ icao: "RJTT", name: "羽田" });
+    expect(estimate?.evidence.some((line) => line.includes("成田") || line.includes("RJAA"))).toBe(false);
+  });
+
+  it("中心線上なら RWY22 まで決まる（確度「高」）", () => {
+    const estimate = buildEstimate(justAirborne(0));
+    expect(estimate?.runway).toBe("22");
+    expect(estimate?.confidence).toBe(0.9);
+    expect(estimate?.evidence).toEqual(["方位のズレ 0.0°", "滑走路まで 1.0km", "上昇中 +1500fpm"]);
+  });
+
+  it.each([
+    ["左 25° 旋回", -25],
+    ["右 25° 旋回", 25],
+  ] as const)("%s では滑走路までは決まらないが、羽田 出発として同じ内容になる", (_name, headingOffDeg) => {
+    // 旋回で方位のズレ 25° が許容（1km なら 19.6°）を超えるので候補は無い。左右で結果が変わらないことを見る
+    const estimate = buildEstimate(justAirborne(headingOffDeg));
+    expect(estimate?.runway).toBeUndefined();
+    expect(estimate?.confidence).toBe(0.3);
+    expect(estimate?.evidence).toEqual(["羽田まで 1.2km", "上昇中 +1500fpm"]);
+  });
+
+  it("route が「羽田発」なら食い違いの減点は付かない（0.5 のまま）", () => {
+    // 修正前は幾何が成田を指したため「幾何判定は RJAA」が付き 0.5 → 0.3 に減点されていた
+    const estimate = buildEstimate(justAirborne(-25, { origin: "RJTT", destination: "RJOO" }));
+    expect(estimate?.airport).toEqual({ icao: "RJTT", name: "羽田" });
+    expect(estimate?.confidence).toBe(0.5);
+    expect(estimate?.evidence).toEqual(["羽田まで 1.2km", "上昇中 +1500fpm", "adsbdb: RJTT 発"]);
   });
 });
 
