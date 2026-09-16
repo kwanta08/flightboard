@@ -1,15 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EARTH_RADIUS_KM, haversineKm } from "../shared/geo.ts";
+import { EARTH_RADIUS_KM, destinationPoint, haversineKm } from "../shared/geo.ts";
 import type { Flight, TrackPoint } from "../shared/types.ts";
 import type { AdsbdbAircraft, AdsbdbClient } from "./adsbdb/client.ts";
 import { createEnrichment } from "./adsbdb/enrichment.ts";
 import type { RouteInfo } from "./adsbdb/enrichment.ts";
+import { AIRPORT_FETCH_RADIUS_NM, createAirportOpsSource } from "./airportOpsSource.ts";
 import { createApp, selectFlights } from "./app.ts";
 import type { AppOptions } from "./app.ts";
+import { TARGET_AIRPORTS } from "./data/airports.ts";
+import { RUNWAY_ENDS } from "./data/runways.ts";
+import { runwayBearingDeg } from "./estimate/runway.ts";
 import { createPositionCache } from "./positionCache.ts";
 import type { CachedPositions } from "./positionCache.ts";
 import { UpstreamError } from "./providers/provider.ts";
-import type { NearbyQuery, PositionFetchResult } from "./providers/provider.ts";
+import type { NearbyQuery, PositionFetchResult, PositionSource } from "./providers/provider.ts";
 import { createTrackStore } from "./trackStore.ts";
 import type { TrackedFlight } from "./trackStore.ts";
 
@@ -62,12 +66,15 @@ function fakePositions(impl: Loader) {
 
 type SetupOptions = Omit<AppOptions, "positions" | "now">;
 
-/** `options` を関数で渡すと、偽時計の `now` を受け取って作れる（同じ時計の trackStore・enrichment を渡すため） */
-function setup(impl: Loader, options: SetupOptions | ((now: () => number) => SetupOptions) = {}) {
+/**
+ * `options` を関数で渡すと、偽時計の `now` と偽の位置取得を受け取って作れる
+ * （同じ時計の trackStore・enrichment や、同じ提供元を共有する airportOps を渡すため）
+ */
+function setup(impl: Loader, options: SetupOptions | ((now: () => number, positions: PositionSource) => SetupOptions) = {}) {
   let time = T0;
   const now = () => time;
   const positions = fakePositions(impl);
-  const app = createApp({ positions, now, ...(typeof options === "function" ? options(now) : options) });
+  const app = createApp({ positions, now, ...(typeof options === "function" ? options(now, positions) : options) });
   return {
     app,
     positions,
@@ -451,6 +458,21 @@ const ANA245_ROUTE: RouteInfo = {
 /** adsbdb の航空会社が null だった便（M2-1）。route だけを持つ */
 const NCA001_ROUTE: RouteInfo = { route: { origin: FUK, destination: HND, source: "adsbdb" } };
 
+/**
+ * ルートの出発地・到着地が RJTT の機体に付く推定（W3 で `estimate` を無条件で付けた。AC-P2-40 / 54）。
+ * `flight()` の機体は trackDeg・verticalRateFpm を持たないので幾何では決まらず、
+ * 「滑走路が決まらない進入／出発・route の裏付けあり」の行（confidence 0.5）になる。
+ * `distanceText` は機体から RJTT までの水平距離（検索中心から北に km 離すほど遠くなる）
+ */
+function hndRouteEstimate(phase: "departure" | "arrival", distanceText: string): NonNullable<Flight["estimate"]> {
+  return {
+    phase,
+    confidence: 0.5,
+    evidence: [`羽田まで ${distanceText}km`, `adsbdb: RJTT ${phase === "departure" ? "発" : "着"}`],
+    airport: { icao: "RJTT", name: "羽田" },
+  };
+}
+
 const B789: AdsbdbAircraft = { model: "Boeing 787 9" };
 
 /** planespotters が返す写真（撮影者名と写真ページのリンクが必須。仕様 §13） */
@@ -568,12 +590,13 @@ describe("GET /api/nearby: ルート情報の付与（AC-A13）", () => {
 
     expect(res.status).toBe(200);
     expect(body.flights).toEqual([
-      { ...loaded[0], airline: ANA245_ROUTE.airline, route: ANA245_ROUTE.route },
+      // RJTT 発着のルートが付いた機体には推定も付く（AC-P2-40）。ルートの無い機体には付かない
+      { ...loaded[0], airline: ANA245_ROUTE.airline, route: ANA245_ROUTE.route, estimate: hndRouteEstimate("departure", "38.8") },
       loaded[1],
       loaded[2],
       loaded[3],
       loaded[4],
-      { ...loaded[5], route: NCA001_ROUTE.route },
+      { ...loaded[5], route: NCA001_ROUTE.route, estimate: hndRouteEstimate("arrival", "43.5") },
       loaded[6],
       loaded[7],
     ]);
@@ -847,6 +870,7 @@ describe("GET /api/flights/:hex（AC-A16）", () => {
         ...flight("abc123", { km: 3, seenPosSec: 3 }),
         airline: ANA245_ROUTE.airline,
         route: ANA245_ROUTE.route,
+        estimate: hndRouteEstimate("departure", "40.6"), // AC-P2-54: 詳細にも推定が入る
         aircraft: B789,
       },
       track: [trackPoint(2, T0 - 3000), trackPoint(3, T0 + 4000)],
@@ -1098,6 +1122,7 @@ describe("GET /api/flights/:hex（AC-A16）", () => {
         ...flight("abc123", { km: 2, seenPosSec: 3 }),
         airline: ANA245_ROUTE.airline,
         route: ANA245_ROUTE.route,
+        estimate: hndRouteEstimate("departure", "39.7"), // 取り直した位置（2km）から RJTT までの距離
         aircraft: B789,
       },
       track: [trackPoint(1, T0 - 1000), trackPoint(2, T0 + 3000)],
@@ -1132,5 +1157,240 @@ describe("GET /api/flights/:hex（AC-A16）", () => {
     const { res, body } = await t.get(path);
     expect(res.status).toBe(404);
     expectApiError(body);
+  });
+});
+
+// ---- W3: 経路の推定の付与・運用方向・空港中心の取得 ----
+
+const HANEDA = TARGET_AIRPORTS[0]!;
+
+/**
+ * RJTT 22 の進入側の延長線上 8km に機体を**合成**する（estimate.test.ts と同じ作り方。実測の生値ではない）。
+ * 検索中心からは約 28.6km なので、既定の半径 50km の観測取得にも入る
+ */
+function arrivingFlight(hex: string): Flight {
+  const end = RUNWAY_ENDS.find((other) => other.icao === "RJTT" && other.ident === "22")!;
+  const bearing = runwayBearingDeg(end, RUNWAY_ENDS)!;
+  const position = destinationPoint(end, bearing + 180, 8);
+  return {
+    hex,
+    callsign: "JAL001",
+    position: { lat: position.lat, lon: position.lon, altitudeBaroFt: 2000, onGround: false },
+    trackDeg: ((bearing % 360) + 360) % 360,
+    verticalRateFpm: -704,
+    isMlat: false,
+    seenPosSec: 1,
+    kind: "passenger",
+    source: "adsblol",
+  };
+}
+
+/** 上の合成機体に付く推定（滑走路まで決まった進入） */
+const ARRIVAL_ESTIMATE: NonNullable<Flight["estimate"]> = {
+  phase: "arrival",
+  airport: { icao: "RJTT", name: "羽田" },
+  runway: "22",
+  confidence: 0.9,
+  evidence: ["方位のズレ 0.0°", "滑走路まで 8.0km", "降下中 -704fpm"],
+};
+
+/** 観測取得（半径 27NM）と空港中心の取得（半径 60NM）で別の応答を返す偽の位置取得 */
+function byQuery(observed: Flight[], airport: (q: NearbyQuery) => Flight[]): Loader {
+  return async (q) => ({
+    flights: q.radiusNm === AIRPORT_FETCH_RADIUS_NM ? airport(q) : observed,
+    source: "adsblol",
+  });
+}
+
+describe("GET /api/nearby: 経路の推定の付与（AC-P2-40）", () => {
+  it("推定が決まる機体にだけ estimate を付ける（airportOps を指定していなくても付く）", async () => {
+    const t = setup(returns([arrivingFlight("abc123"), flight("ddd444", { km: 1, callsign: undefined })]));
+
+    const { res, body } = await t.get(NEARBY);
+    expect(res.status).toBe(200);
+    expect(flightByHex(body, "abc123")?.estimate).toEqual(ARRIVAL_ESTIMATE);
+    // 進行方向・昇降率が無い機体は phase が決まらないので推定を付けない
+    expect(flightByHex(body, "ddd444")).not.toHaveProperty("estimate");
+    // airportOps を渡していないので運用方向は空のまま
+    expect(body.airportOps).toEqual([]);
+  });
+
+  it("位置のキャッシュに推定を書き戻さない（キャッシュヒットでも同じ推定を付ける）", async () => {
+    const loaded = [arrivingFlight("abc123")];
+    const t = setup(returns(loaded));
+
+    await t.get(NEARBY);
+    expect(loaded[0]).not.toHaveProperty("estimate");
+
+    t.advance(3000);
+    const cached = await t.get(NEARBY);
+    expect(t.positions.calls).toBe(1);
+    expect(flightByHex(cached.body, "abc123")?.estimate).toEqual(ARRIVAL_ESTIMATE);
+  });
+});
+
+describe("GET /api/nearby: 運用方向（AC-P2-33・60〜62）", () => {
+  let consoleError: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    consoleError.mockRestore();
+  });
+
+  /** 本物の airportOpsSource を、アプリと同じ時計・同じ提供元インスタンスで配線する */
+  function setupOps(impl: Loader) {
+    return setup(impl, (now, positions) => ({ airportOps: createAirportOpsSource({ positions, now }) }));
+  }
+
+  it("推定が 1 件以上あれば airportOps が空でなくなる（AC-P2-33）", async () => {
+    const t = setupOps(byQuery([arrivingFlight("abc123")], () => []));
+
+    const { res, body } = await t.get(NEARBY);
+    expect(res.status).toBe(200);
+    expect(body.airportOps).toEqual([
+      {
+        icao: "RJTT",
+        landingRunways: ["22"],
+        departingRunways: [],
+        configLabel: "南風運用",
+        basedOn: 1,
+        updatedAt: iso(T0),
+      },
+    ]);
+  });
+
+  it("観測点の応答に含まれず空港取得の応答にだけ含まれる機体も集計に使う（AC-P2-60）", async () => {
+    const t = setupOps(byQuery([], (q) => (q.lat === HANEDA.lat ? [arrivingFlight("abc123")] : [])));
+
+    const first = await t.get(NEARBY);
+    expect(hexes(first.body)).toEqual([]); // 観測取得には含まれない
+    expect(first.body.airportOps).toEqual([]); // 空港取得はまだ決着していない
+
+    await flush();
+    const second = await t.get(NEARBY); // 位置はキャッシュヒット（観測取得は増えない）
+    expect(t.positions.queries.filter((q) => q.radiusNm !== AIRPORT_FETCH_RADIUS_NM)).toHaveLength(1);
+    expect(hexes(second.body)).toEqual([]);
+    expect(second.body.airportOps).toEqual([
+      {
+        icao: "RJTT",
+        landingRunways: ["22"],
+        departingRunways: [],
+        configLabel: "南風運用",
+        basedOn: 1,
+        updatedAt: iso(T0),
+      },
+    ]);
+  });
+
+  it("空港取得で得た機体は航跡にも記録され、観測半径の外でも /api/flights/:hex で引ける（spec §7.3）", async () => {
+    // アプリと同じ trackStore を空港中心の取得にも渡す
+    const t = setup(
+      byQuery([], (q) => (q.lat === HANEDA.lat ? [arrivingFlight("abc123")] : [])),
+      (now, positions) => {
+        const tracks = createTrackStore({ now });
+        return { tracks, airportOps: createAirportOpsSource({ positions, now, tracks }) };
+      },
+    );
+
+    const nearby = await t.get(NEARBY);
+    expect(hexes(nearby.body)).toEqual([]); // 観測取得には含まれない
+
+    await flush(); // 空港取得を決着させる
+    const { res, body } = await t.get("/api/flights/abc123");
+    expect(res.status).toBe(200);
+    expect((body.flight as Flight).hex).toBe("abc123");
+    expect((body.flight as Flight).estimate).toEqual(ARRIVAL_ESTIMATE);
+  });
+
+  it("1 回の /api/nearby で位置の上流へ出る取得は 2 本以下で、空港取得は応答を待たせない（AC-P2-61）", async () => {
+    const t = setupOps(async (q) =>
+      q.radiusNm === AIRPORT_FETCH_RADIUS_NM ? never() : { flights: [arrivingFlight("abc123")], source: "adsblol" },
+    );
+
+    // 空港取得が決着しなくても応答する
+    const { res, body } = await within(t.get(NEARBY), 1000);
+    expect(res.status).toBe(200);
+    expect(hexes(body)).toEqual(["abc123"]);
+    // 観測点 1 本 ＋ 空港 1 本
+    expect(t.positions.queries.map((q) => q.radiusNm)).toEqual([27, AIRPORT_FETCH_RADIUS_NM]);
+  });
+
+  it("空港取得が失敗しても 200 で、airportOps は直前の集計値を保つ（AC-P2-62）", async () => {
+    const t = setupOps(async (q) => {
+      if (q.radiusNm === AIRPORT_FETCH_RADIUS_NM) throw new UpstreamError("airport: HTTP 502", { status: 502 });
+      return { flights: [arrivingFlight("abc123")], source: "adsblol" };
+    });
+
+    const first = await t.get(NEARBY);
+    expect(first.res.status).toBe(200);
+    expect(first.body.airportOps).toHaveLength(1);
+
+    await flush(); // 空港取得の失敗を決着させる
+    const second = await t.get(NEARBY); // 位置はキャッシュヒット（時計は進めない）
+    expect(second.res.status).toBe(200);
+    expect(second.body.airportOps).toEqual(first.body.airportOps);
+    expect(consoleError).toHaveBeenCalled();
+  });
+
+  it("airportOps と cache を同時に指定すると作成時に TypeError を投げる", () => {
+    const positions = fakePositions(returns([]));
+    const now = () => T0;
+    const cache = createPositionCache({ now });
+    const airportOps = createAirportOpsSource({ positions, now });
+    expect(() => createApp({ positions, now, cache, airportOps })).toThrow(TypeError);
+    expect(() => createApp({ positions, now, airportOps })).not.toThrow();
+  });
+
+  it("airportOps.record が例外を投げても 200 で機体を返し、エラーを console.error に出す", async () => {
+    const airportOps = {
+      current: () => [],
+      record: () => {
+        throw new Error("aggregate broken");
+      },
+      refresh: () => undefined,
+    };
+    const t = setup(returns([arrivingFlight("abc123")]), { airportOps });
+
+    const { res, body } = await t.get(NEARBY);
+    expect(res.status).toBe(200);
+    expect(hexes(body)).toEqual(["abc123"]);
+    expect(consoleError).toHaveBeenCalled();
+  });
+
+  it("airportOps.refresh・current が例外を投げても 200 で、airportOps は空配列にする", async () => {
+    const airportOps = {
+      current: (): never => {
+        throw new Error("current broken");
+      },
+      record: () => undefined,
+      refresh: (): never => {
+        throw new Error("refresh broken");
+      },
+    };
+    const t = setup(returns([arrivingFlight("abc123")]), { airportOps });
+
+    const { res, body } = await t.get(NEARBY);
+    expect(res.status).toBe(200);
+    expect(body.airportOps).toEqual([]);
+    expect(consoleError).toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/flights/:hex: 経路の推定（AC-P2-54）", () => {
+  it("flight.estimate に evidence が入る（enrichment・photos が無くても付く）", async () => {
+    const t = setup(returns([arrivingFlight("abc123")]), (now) => ({ tracks: createTrackStore({ now }) }));
+    await t.get(NEARBY);
+
+    const { res, body } = await t.get("/api/flights/abc123");
+    expect(res.status).toBe(200);
+    expect((body.flight as Flight).estimate).toEqual(ARRIVAL_ESTIMATE);
+    expect((body.flight as Flight).estimate?.evidence).toEqual([
+      "方位のズレ 0.0°",
+      "滑走路まで 8.0km",
+      "降下中 -704fpm",
+    ]);
   });
 });

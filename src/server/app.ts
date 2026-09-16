@@ -4,8 +4,10 @@ import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { haversineKm } from "../shared/geo.ts";
 import type { LatLon } from "../shared/geo.ts";
-import type { ApiError, Flight, FlightDetailResponse, NearbyResponse } from "../shared/types.ts";
+import type { AirportOps, ApiError, Flight, FlightDetailResponse, NearbyResponse } from "../shared/types.ts";
 import type { Enrichment, RouteInfo } from "./adsbdb/enrichment.ts";
+import type { AirportOpsSource } from "./airportOpsSource.ts";
+import { buildEstimate } from "./estimate/estimate.ts";
 import type { AircraftPhoto, PhotoSource } from "./photos/planespotters.ts";
 import { parseNearbyParams } from "./nearbyParams.ts";
 import { cacheKey, createPositionCache } from "./positionCache.ts";
@@ -28,6 +30,9 @@ export type AppEnrichment = Pick<Enrichment, "getRoute" | "enqueueRoutes" | "get
 
 /** アプリが使う航跡の保持（`trackStore.ts` の `TrackStore` の一部） */
 export type AppTracks = Pick<TrackStore, "record" | "get">;
+
+/** アプリが使う運用方向の集計（`airportOpsSource.ts` の `AirportOpsSource`。型だけを参照する） */
+export type AppAirportOps = Pick<AirportOpsSource, "current" | "record" | "refresh">;
 
 export type AppOptions = {
   positions: PositionSource;
@@ -59,6 +64,12 @@ export type AppOptions = {
    * 無ければ `/api/flights/:hex` は常に 404。`cache` と同時に指定すると `createApp` が `TypeError` を投げる
    */
   tracks?: AppTracks;
+  /**
+   * 運用方向の集計と空港中心の取得（`airportOpsSource.ts`）。あれば位置をキャッシュミスで取得するたびに
+   * 取得した全機体を `record` し、`/api/nearby` の処理中に `refresh()`（応答は待たせない）と `current()` を呼ぶ。
+   * 無ければ `/api/nearby` の `airportOps` は常に空配列。`cache` と同時に指定すると `createApp` が `TypeError` を投げる
+   */
+  airportOps?: AppAirportOps;
   /**
    * ビルド済みクライアント（`dist/client`）のディレクトリ。指定したときだけ、`/api` と `/api/` 以下を除く GET に静的ファイルを配信する
    * （`/` は `index.html`、見つからなければ `text/plain` の 404）。未指定なら静的配信を登録せず、未定義のパスはすべて JSON の 404
@@ -164,6 +175,20 @@ function isTrackedKind(kind: Flight["kind"]): boolean {
 }
 
 /**
+ * 各機体に経路の推定を付ける（AC-P2-40）。入力の配列と機体オブジェクトは書き換えない。
+ * 滑走路データは静的なので、`airportOps` を指定していなくても付く。
+ * 生成規則で推定が付かない機体（不明かつ滑走路なし）は入力と同じオブジェクトのまま
+ */
+export function attachEstimates(flights: readonly Flight[]): Flight[] {
+  return flights.map(withEstimate);
+}
+
+function withEstimate(flight: Flight): Flight {
+  const estimate = buildEstimate(flight);
+  return estimate === undefined ? flight : { ...flight, estimate };
+}
+
+/**
  * 保持している機体を詳細 API で返せるか判定し、返す機体のコピーを作る（AC-A16・M2-3）。保持している値は書き換えない。
  * `seenPosSec` に保持してからの経過秒を足し、60 秒を超える・旅客機でも貨物機でもないなら undefined
  */
@@ -191,7 +216,7 @@ function flightDetail(tracked: Pick<TrackedFlight, "fetchedAt" | "points">, flig
 }
 
 export function createApp(options: AppOptions): Hono {
-  const { positions, onPositionsLoaded, enrichment, photos, tracks, staticRoot } = options;
+  const { positions, onPositionsLoaded, enrichment, photos, tracks, airportOps, staticRoot } = options;
   const now = options.now ?? Date.now;
   // 片方を黙って無視しないよう、同時指定は作成時に拒否する
   if (options.cache !== undefined && onPositionsLoaded !== undefined) {
@@ -200,9 +225,12 @@ export function createApp(options: AppOptions): Hono {
   if (options.cache !== undefined && tracks !== undefined) {
     throw new TypeError("createApp: cache and tracks cannot be specified together");
   }
+  if (options.cache !== undefined && airportOps !== undefined) {
+    throw new TypeError("createApp: cache and airportOps cannot be specified together");
+  }
 
   const onLoaded =
-    tracks === undefined && onPositionsLoaded === undefined
+    tracks === undefined && onPositionsLoaded === undefined && airportOps === undefined
       ? undefined
       : (value: CachedPositions): void => {
           if (tracks !== undefined) {
@@ -211,6 +239,14 @@ export function createApp(options: AppOptions): Hono {
               tracks.record(value.flights, value.fetchedAt);
             } catch (error) {
               console.error("[BFF] 航跡の記録に失敗しました:", error);
+            }
+          }
+          if (airportOps !== undefined) {
+            // 観測取得の機体も運用方向の集計に流す（絞り込み前の全機体。plan の「運用方向の集計の設計」）
+            try {
+              airportOps.record(value.flights, value.fetchedAt);
+            } catch (error) {
+              console.error("[BFF] 運用方向の集計に失敗しました:", error);
             }
           }
           onPositionsLoaded?.(value);
@@ -256,6 +292,26 @@ export function createApp(options: AppOptions): Hono {
     }
   }
 
+  /** 空港中心の取得を蹴る（応答は待たせない。AC-P2-61）。同期の例外で応答を失敗させない */
+  function startAirportOpsRefresh(target: AppAirportOps): void {
+    try {
+      target.refresh();
+    } catch (error) {
+      console.error("[GET /api/nearby] 空港中心の取得を始められませんでした:", error);
+    }
+  }
+
+  /** 直近の運用方向。集計に失敗したときは空配列で返す（応答は 200 のまま。AC-P2-62） */
+  function currentAirportOps(): AirportOps[] {
+    if (airportOps === undefined) return [];
+    try {
+      return airportOps.current();
+    } catch (error) {
+      console.error("[GET /api/nearby] 運用方向の集計に失敗しました:", error);
+      return [];
+    }
+  }
+
   /** 保持している機体を取り、応答時点の経過秒で判定する（M2-3）。保持していない・返せないなら undefined */
   function findTrackedFlight(hex: string): { tracked: TrackedFlight; flight: Flight } | undefined {
     const tracked = tracks?.get(hex);
@@ -290,12 +346,17 @@ export function createApp(options: AppOptions): Hono {
       flights = routed.flights;
       enqueueMissingRoutes(enrichment, routed.missingCallsigns);
     }
+    // 推定は静的な滑走路データだけで決まるので、airportOps の指定に関わらず付ける（AC-P2-40）。
+    // ルートを付けた後に呼び、route の裏付け（AC-P2-14）を使えるようにする
+    flights = attachEstimates(flights);
+
+    if (airportOps !== undefined) startAirportOpsRefresh(airportOps);
 
     const body: NearbyResponse = {
       updatedAt: new Date(loaded.fetchedAt).toISOString(),
       source: loaded.source,
       flights,
-      airportOps: [],
+      airportOps: currentAirportOps(),
     };
     return c.json(body, 200);
   });
@@ -311,7 +372,7 @@ export function createApp(options: AppOptions): Hono {
       return c.json({ error: MESSAGE_FLIGHT_NOT_FOUND } satisfies ApiError, 404);
     }
     if (enrichment === undefined && photos === undefined) {
-      return c.json(flightDetail(held.tracked, held.flight), 200);
+      return c.json(flightDetail(held.tracked, withEstimate(held.flight)), 200);
     }
 
     // 機体情報・写真の照会を先に始めてから未取得のルートを積む（機体情報の照会をルート照会の後ろに並べない。AC-A14）
@@ -331,7 +392,8 @@ export function createApp(options: AppOptions): Hono {
     if (latest === undefined) {
       return c.json({ error: MESSAGE_FLIGHT_NOT_FOUND } satisfies ApiError, 404);
     }
-    let flight = attachRoutes([latest.flight], getRoute).flights[0]!;
+    // 推定はルートを付けた後に組み立てる（route の裏付けを使う。AC-P2-54）
+    let flight = withEstimate(attachRoutes([latest.flight], getRoute).flights[0]!);
     const aircraftWithPhoto = mergeAircraft(aircraft, photo);
     if (aircraftWithPhoto !== undefined) flight = { ...flight, aircraft: aircraftWithPhoto };
     return c.json(flightDetail(latest.tracked, flight), 200);

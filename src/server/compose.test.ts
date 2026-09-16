@@ -20,7 +20,11 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-/** 受けた要求の URL を記録し、`respond` の応答を返す偽の fetch と、進められる偽の時計・即座に解決する待機で合成する */
+/**
+ * 受けた要求の URL を記録し、`respond` の応答を返す偽の fetch と、進められる偽の時計・即座に解決する待機で合成する。
+ * 空港中心の取得は既定で無効（`airportOps: false`）にし、上流への要求を観測点の 1 系統だけに保つ。
+ * 有効にしたときの配線は「空港中心の取得」の describe で別に確かめる
+ */
 function setup(respond: (url: URL) => Response, options: Omit<ComposeAppOptions, "fetch" | "now" | "sleep"> = {}) {
   let time = T0;
   const urls: URL[] = [];
@@ -29,7 +33,7 @@ function setup(respond: (url: URL) => Response, options: Omit<ComposeAppOptions,
     urls.push(parsed);
     return respond(parsed);
   };
-  const app = composeApp({ fetch, now: () => time, sleep: async () => undefined, ...options });
+  const app = composeApp({ fetch, now: () => time, sleep: async () => undefined, airportOps: false, ...options });
   return {
     app,
     urls,
@@ -156,5 +160,85 @@ describe("composeApp: ビルド済みの画面が無いときの案内（W1 MINO
 
     expect(fileExists).not.toHaveBeenCalled();
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("composeApp: 空港中心の取得（AC-P2-61・提供元の共有）", () => {
+  /** 待っているマイクロタスクを流す（空港中心の取得は応答を待たせないので、決着させてから確かめる） */
+  function flush(): Promise<void> {
+    return new Promise((resolve) => setImmediate(resolve));
+  }
+
+  /** 位置の上流への要求だけを取り出す（adsbdb・planespotters を除く） */
+  function positionUrls(urls: URL[]): URL[] {
+    return urls.filter((url) => url.hostname !== "api.adsbdb.com" && url.hostname !== "api.planespotters.net");
+  }
+
+  it("既定（指定しない）では有効で、/api/nearby の処理中に羽田中心・半径 60NM の取得が 1 本だけ出る", async () => {
+    const urls: URL[] = [];
+    const fetch: FetchLike = async (url) => {
+      urls.push(new URL(url));
+      return jsonResponse({ ac: [] });
+    };
+    const app = composeApp({ fetch, now: () => T0, sleep: async () => undefined });
+
+    const res = await app.request(NEARBY);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ airportOps: [] });
+    await flush();
+
+    // 観測点（半径 27NM）1 本 ＋ 空港（半径 60NM）1 本 = 2 本
+    expect(positionUrls(urls).map((url) => url.pathname)).toEqual([
+      "/v2/point/35.87/139.93/27",
+      "/v2/point/35.5523/139.78/60",
+    ]);
+  });
+
+  it("airportOps: false なら空港中心の取得をせず、上流へ出るのは観測点の 1 本だけ", async () => {
+    const t = setup(() => jsonResponse({ ac: [] }), { airportOps: false });
+
+    const { res } = await t.get(NEARBY);
+    expect(res.status).toBe(200);
+    await flush();
+    expect(positionUrls(t.urls).map((url) => url.pathname)).toEqual(["/v2/point/35.87/139.93/27"]);
+  });
+
+  it("観測点の取得で 429 になった提供元は空港中心の取得でも試さない（同じ提供元インスタンスを共有する）", async () => {
+    const t = setup(
+      (url) => (url.hostname === "api.adsb.lol" ? new Response("slow down", { status: 429 }) : jsonResponse({ ac: [] })),
+      { airportOps: true },
+    );
+
+    const { res } = await t.get(NEARBY);
+    expect(res.status).toBe(200);
+    await flush();
+
+    // 観測点: adsb.lol が 429 → adsb.fi で取得。空港: 休止中の adsb.lol を飛ばして adsb.fi から取得
+    expect(positionUrls(t.urls).map((url) => [url.hostname, url.pathname])).toEqual([
+      ["api.adsb.lol", "/v2/point/35.87/139.93/27"],
+      ["opendata.adsb.fi", "/api/v3/lat/35.87/lon/139.93/dist/27"],
+      ["opendata.adsb.fi", "/api/v3/lat/35.5523/lon/139.78/dist/60"],
+    ]);
+  });
+
+  it("空港中心の取得は次の要求まで TTL（30 秒）あけ、その間は成田を 1 本だけ取る", async () => {
+    const t = setup(() => jsonResponse({ ac: [] }), { airportOps: true });
+
+    await t.get(NEARBY);
+    await flush();
+    t.advance(5000); // 位置のキャッシュ（5 秒）を外す
+    await t.get(NEARBY);
+    await flush();
+    t.advance(5000);
+    await t.get(NEARBY); // 羽田・成田とも TTL 内なので空港取得は出ない
+    await flush();
+
+    expect(positionUrls(t.urls).map((url) => url.pathname)).toEqual([
+      "/v2/point/35.87/139.93/27",
+      "/v2/point/35.5523/139.78/60",
+      "/v2/point/35.87/139.93/27",
+      "/v2/point/35.7647/140.386/60",
+      "/v2/point/35.87/139.93/27",
+    ]);
   });
 });
