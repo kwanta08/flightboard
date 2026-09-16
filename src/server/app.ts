@@ -12,17 +12,19 @@ import type { AircraftPhoto, PhotoSource } from "./photos/planespotters.ts";
 import { parseNearbyParams } from "./nearbyParams.ts";
 import { cacheKey, createPositionCache } from "./positionCache.ts";
 import type { CachedPositions, PositionCache } from "./positionCache.ts";
-import { UpstreamError } from "./providers/provider.ts";
+import { MAX_SEEN_POS_SEC, UpstreamError } from "./providers/provider.ts";
 import type { PositionSource } from "./providers/provider.ts";
 import type { TrackedFlight, TrackStore } from "./trackStore.ts";
-
-/** 位置の最終受信からこの秒数を超えた機体は返さない（ちょうどは返す） */
-export const MAX_SEEN_POS_SEC = 60;
 
 /** `GET /api/flights/:hex` の hex（小文字化した後に検証する） */
 export const FLIGHT_HEX_PATTERN = /^~?[0-9a-f]{6}$/;
 
-/** `providers/provider.ts` の `PositionSource` の再エクスポート（互換のため残す） */
+/**
+ * `providers/provider.ts` の再エクスポート（互換のため残す）。
+ * `MAX_SEEN_POS_SEC`（位置の最終受信からこの秒数を超えた機体は返さない。ちょうどは返す）は
+ * 運用方向の集計（`airportOpsSource.ts`）とも共有するので、定義はそちらにある
+ */
+export { MAX_SEEN_POS_SEC };
 export type { PositionSource };
 
 /** アプリが使う adsbdb の付与（`adsbdb/enrichment.ts` の `Enrichment` の一部） */

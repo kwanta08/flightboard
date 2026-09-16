@@ -5,7 +5,6 @@
 // こうすると停止処理・`unref` が要らず、`server.ts` の `close()` も変えずに済む。
 // 位置の取得元は composeApp が作ったフォールバック提供元と**同じインスタンス**を共有する（429 の休止も共有する）。
 import type { AirportOps, Flight } from "../shared/types.ts";
-import { MAX_SEEN_POS_SEC } from "./app.ts";
 import type { AppTracks } from "./app.ts";
 import { TARGET_AIRPORTS } from "./data/airports.ts";
 import type { TargetAirport } from "./data/airports.ts";
@@ -14,6 +13,7 @@ import { RUNWAY_ENDS } from "./data/runways.ts";
 import { AIRPORT_OPS_WINDOW_MS, aggregateAirportOps } from "./estimate/airportOps.ts";
 import type { AirportOpsEntry } from "./estimate/airportOps.ts";
 import { buildEstimate } from "./estimate/estimate.ts";
+import { MAX_SEEN_POS_SEC } from "./providers/provider.ts";
 import type { PositionSource } from "./providers/provider.ts";
 
 /** 空港中心の取得の半径（海里。spec §7.3 の表） */
@@ -22,8 +22,21 @@ export const AIRPORT_FETCH_RADIUS_NM = 60;
 /** 同じ空港を取得し直す間隔（ms）。最終取得からこれを**超えて**いれば取得する */
 export const DEFAULT_AIRPORT_FETCH_TTL_MS = 30_000;
 
+/**
+ * 取得が `ttlMs × この倍数`（既定 30 秒 × 10 = 5 分）を超えて決着しなければ、取得中の印を無視して次を蹴る（保険）。
+ * `options.positions` の契約（必ず決着する提供元）が破られたときに、`airportOps` が 10 分後に空へ落ちたまま
+ * 二度と戻らなくなるのを防ぐ。契約どおりの提供元では発動しない（`provider.ts` のタイムアウトは 5 秒）
+ */
+export const STUCK_FETCH_TTL_MULTIPLE = 10;
+
 export type AirportOpsSourceOptions = {
-  /** 位置の取得元。観測点の取得と同じインスタンスを渡す（429 の休止状態を共有するため） */
+  /**
+   * 位置の取得元。観測点の取得と同じインスタンスを渡す（429 の休止状態を共有するため）。
+   * **必ず決着する（タイムアウトを持つ）提供元を渡すこと**。`refresh()` は取得中の間は次を蹴らないので、
+   * 決着しない `fetchNearby` を渡すと空港取得が止まる（`composeApp` が渡す提供元は `provider.ts` の
+   * タイムアウトで必ず決着する）。止まったままにならないよう保険は入れてあるが、復帰は
+   * `ttlMs × STUCK_FETCH_TTL_MULTIPLE` 後になる
+   */
   positions: PositionSource;
   /** 現在時刻（ms）。アプリ・航跡と同じものを渡す */
   now: () => number;
@@ -69,8 +82,13 @@ export function createAirportOpsSource(options: AirportOpsSourceOptions): Airpor
   const entries = new Map<string, AirportOpsEntry>();
   /** icao → 最後に取得を**始めた**時刻（ms）。失敗しても更新するので、失敗した空港も TTL 分は間を空ける */
   const startedAt = new Map<string, number>();
-  /** 取得中の空港がある間は次を蹴らない（1 応答で蹴るのは最大 1 空港。AC-P2-61） */
-  let fetching = false;
+  /**
+   * 取得を始めた時刻（ms）。undefined なら取得中の空港は無い。
+   * 取得中は次を蹴らない（1 応答で蹴るのは最大 1 空港。AC-P2-61）が、`STUCK_FETCH_TTL_MULTIPLE` を超えて
+   * 決着しなければ保険として無視する（そのとき決着した取得が新しい取得の印を消さないよう `fetchSeq` で見分ける）
+   */
+  let fetchStartedAt: number | undefined;
+  let fetchSeq = 0;
 
   /** 10 分窓から外れた記録を捨てる（保持を際限なく増やさない） */
   function prune(at: number): void {
@@ -94,7 +112,15 @@ export function createAirportOpsSource(options: AirportOpsSourceOptions): Airpor
     prune(now());
   }
 
-  /** 滑走路まで決まった進入・出発なら記録にする。それ以外（滑走路なし・通過・不明）は集計に使わない */
+  /**
+   * 滑走路まで決まった進入・出発なら記録にする。それ以外（滑走路なし・通過・不明）は集計に使わない。
+   *
+   * ここへ渡る機体は `attachRoutes` の**前**の生の機体なので、**route（adsbdb）の裏付けは使わない**
+   * （幾何が滑走路を決めた機体だけを数える）。そのため `/api/nearby` の各行の `estimate`（route 付きで組み立てる）と
+   * 食い違うことがある: route が「羽田発」と言う機体は、行では AC-P2-16 により「出発・滑走路なし」と出るが、
+   * ここでは幾何どおり「着陸 RWY22」として数えられる。
+   * plan の指定（`selectFlights` の前の全機体を流す＝観測半径の外の機体も数える）どおりの挙動。
+   */
   function toEntry(flight: Flight, at: number): AirportOpsEntry | undefined {
     const estimate = buildEstimate(flight, ends, airports);
     if (estimate === undefined) return undefined;
@@ -145,16 +171,25 @@ export function createAirportOpsSource(options: AirportOpsSourceOptions): Airpor
     record,
 
     refresh() {
-      if (fetching) return;
       const at = now();
+      // 契約に反して決着しない提供元を渡されたときの保険（`STUCK_FETCH_TTL_MULTIPLE`）
+      const stuck = fetchStartedAt !== undefined && at - fetchStartedAt > ttlMs * STUCK_FETCH_TTL_MULTIPLE;
+      if (fetchStartedAt !== undefined && !stuck) return;
       const airport = dueAirport(at);
       if (airport === undefined) return;
+      if (stuck) {
+        console.error(
+          `[BFF] 空港中心の取得が ${at - (fetchStartedAt ?? at)}ms 決着していません。取得を再開します（${airport.icao}）`,
+        );
+      }
       // 失敗しても TTL 分は間を空けるため、取得を始めた時刻で更新する
       startedAt.set(airport.icao, at);
-      fetching = true;
+      fetchStartedAt = at;
+      const seq = ++fetchSeq;
       // 応答を待たせない（AC-P2-61）。fetchAirport は reject しないので未処理の reject を残さない
       void fetchAirport(airport).finally(() => {
-        fetching = false;
+        // 保険で追い越された古い取得が、後から決着しても新しい取得の印を消さないようにする
+        if (seq === fetchSeq) fetchStartedAt = undefined;
       });
     },
   };
