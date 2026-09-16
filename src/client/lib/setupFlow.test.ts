@@ -122,6 +122,18 @@ describe("appScreen", () => {
   it("地点があっても［変更］で編集中ならセットアップ", () => {
     expect(appScreen(NAGAREYAMA, true)).toBe("setup");
   });
+
+  it("［設定］を開いていれば設定画面（S-04）", () => {
+    expect(appScreen(NAGAREYAMA, false, true)).toBe("settings");
+  });
+
+  it("設定画面から地点を編集している間はセットアップ（戻ると設定画面に戻る）", () => {
+    expect(appScreen(NAGAREYAMA, true, true)).toBe("setup");
+  });
+
+  it("地点が無ければ設定画面より先にセットアップ", () => {
+    expect(appScreen(undefined, false, true)).toBe("setup");
+  });
 });
 
 describe("LOCATION_CHANGE_LABEL", () => {
@@ -147,6 +159,24 @@ describe("focusTargetOnScreenChange", () => {
   it("画面が変わらなければ移さない", () => {
     expect(focusTargetOnScreenChange("setup", "setup")).toBeUndefined();
     expect(focusTargetOnScreenChange("main", "main")).toBeUndefined();
+    expect(focusTargetOnScreenChange("settings", "settings")).toBeUndefined();
+  });
+
+  it("設定画面に切り替わったら見出しへ（メインからでも、地点の編集から戻ったときでも）", () => {
+    expect(focusTargetOnScreenChange("main", "settings")).toBe("settings-heading");
+    expect(focusTargetOnScreenChange("setup", "settings")).toBe("settings-heading");
+  });
+
+  it("設定画面からメイン画面に戻ったらヘッダーの［設定］ボタンへ", () => {
+    expect(focusTargetOnScreenChange("settings", "main")).toBe("settings-button");
+  });
+
+  it("設定画面から地点の編集に入ったらセットアップの見出しへ", () => {
+    expect(focusTargetOnScreenChange("settings", "setup")).toBe("setup-heading");
+  });
+
+  it("初回の表示が設定画面でもフォーカスを移さない", () => {
+    expect(focusTargetOnScreenChange(undefined, "settings")).toBeUndefined();
   });
 });
 

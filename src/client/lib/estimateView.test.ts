@@ -257,6 +257,11 @@ describe("ヘッダーの運用方向（AC-P2-52）", () => {
         expect(airportOpsHeaderFor("setup", airportOps)).toBeUndefined();
       },
     );
+
+    // 設定画面（S-04）は一覧も地図も出さない画面なので、ここでも出さない（W6）
+    it("設定画面では出さない", () => {
+      expect(airportOpsHeaderFor("settings", [ops("RJTT", "南風運用")])).toBeUndefined();
+    });
   });
 });
 

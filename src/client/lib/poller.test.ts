@@ -1033,6 +1033,64 @@ describe("createPoller: 状態の通知", () => {
   });
 });
 
+describe("createPoller: 更新間隔の変更（AC-P2-74）", () => {
+  it("実行中に間隔を変えると、その時点から新しい間隔で刻む（再読み込みは要らない）", async () => {
+    const { poller, timers, loader } = setup();
+    poller.start(A);
+    loader.call(0).resolve(response("t1"));
+    await flush();
+
+    timers.advance(5_000);
+    poller.setIntervalMs(5_000);
+    // 間隔を変えただけでは送らない
+    expect(loader.calls).toHaveLength(1);
+    timers.advance(4_999);
+    expect(loader.calls).toHaveLength(1);
+    timers.advance(1); // 変更から 5 秒
+    expect(loader.calls).toHaveLength(2);
+    loader.call(1).resolve(response("t2"));
+    await flush();
+    timers.advance(5_000);
+    expect(loader.calls).toHaveLength(3);
+    // 刻みは 1 本のまま（作り直しで増やさない）
+    expect(timers.activeCount()).toBe(1);
+  });
+
+  it("同じ間隔を渡したらタイマーを作り直さない", () => {
+    const { poller, timers } = setup();
+    poller.start(A);
+    poller.setIntervalMs(DEFAULT_POLL_INTERVAL_MS);
+    expect(timers.created).toHaveLength(1);
+    expect(timers.cleared).toEqual([]);
+  });
+
+  it("開始前に変えた間隔は、開始したときの刻みから使う", () => {
+    const { poller, timers } = setup();
+    poller.setIntervalMs(30_000);
+    poller.start(A);
+    expect(timers.created).toHaveLength(1);
+    expect(timers.created[0]?.ms).toBe(30_000);
+  });
+
+  it("進行中の要求は中断しない（間隔の変更で 1 本増やさない）", () => {
+    const { poller, loader } = setup();
+    poller.start(A);
+    poller.setIntervalMs(5_000);
+    expect(loader.calls).toHaveLength(1);
+    expect(loader.call(0).signal.aborted).toBe(false);
+  });
+
+  it("停止中に変えた間隔は、再開したときの刻みから使う", () => {
+    const { poller, timers } = setup();
+    poller.start(A);
+    poller.stop();
+    poller.setIntervalMs(5_000);
+    poller.start(A);
+    expect(timers.created).toHaveLength(2);
+    expect(timers.created[1]?.ms).toBe(5_000);
+  });
+});
+
 describe("documentVisibility", () => {
   class FakeDocument extends EventTarget {
     visibilityState: DocumentVisibilityState = "visible";

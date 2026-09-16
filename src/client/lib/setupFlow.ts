@@ -88,19 +88,31 @@ export function canCancelSetup(current?: Location): boolean {
   return current !== undefined;
 }
 
-export type AppScreen = "setup" | "main";
+export type AppScreen = "setup" | "main" | "settings";
 
-/** 出す画面。地点が無い（保存値が無い・不正）か、［変更］で編集中ならセットアップ */
-export function appScreen(location: Location | undefined, editing: boolean): AppScreen {
-  return location === undefined || editing ? "setup" : "main";
+/**
+ * 出す画面。地点が無い（保存値が無い・不正）か、［変更］［地点を追加］で編集中ならセットアップ。
+ * 地点があり編集中でなく、［設定］を開いていれば設定画面（S-04）。
+ * セットアップを設定画面より優先するので、設定画面から地点を編集して戻ると設定画面に戻る
+ */
+export function appScreen(location: Location | undefined, editing: boolean, settingsOpen = false): AppScreen {
+  if (location === undefined || editing) {
+    return "setup";
+  }
+  return settingsOpen ? "settings" : "main";
 }
 
-/** 画面が切り替わったときにフォーカスを移す先。setup-heading: セットアップの見出し / location-change: ［地点を変更］ボタン */
-export type ScreenFocusTarget = "setup-heading" | "location-change";
+/**
+ * 画面が切り替わったときにフォーカスを移す先。
+ * setup-heading: セットアップの見出し / settings-heading: 設定の見出し /
+ * location-change: ［地点を変更］ボタン / settings-button: ヘッダーの［設定］ボタン
+ */
+export type ScreenFocusTarget = "setup-heading" | "settings-heading" | "location-change" | "settings-button";
 
 /**
  * 画面の切り替えでフォーカスを移す先。初回の表示（前の画面が無い）と、画面が変わらないときは移さない
- * （切り替えで押したボタンが消えてフォーカスが失われるのを防ぐ）
+ * （切り替えで押したボタンが消えてフォーカスが失われるのを防ぐ）。
+ * メイン画面へ戻るときは、開いていた画面を開いたボタン（設定なら［設定］、セットアップなら［地点を変更］）へ戻す
  */
 export function focusTargetOnScreenChange(
   previous: AppScreen | undefined,
@@ -109,7 +121,13 @@ export function focusTargetOnScreenChange(
   if (previous === undefined || previous === next) {
     return undefined;
   }
-  return next === "setup" ? "setup-heading" : "location-change";
+  if (next === "setup") {
+    return "setup-heading";
+  }
+  if (next === "settings") {
+    return "settings-heading";
+  }
+  return previous === "settings" ? "settings-button" : "location-change";
 }
 
 /**

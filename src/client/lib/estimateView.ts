@@ -175,10 +175,11 @@ export function buildAirportOpsHeader(airportOps: readonly AirportOps[] | undefi
 }
 
 /**
- * ヘッダーに出す運用方向の 1 行。**メイン画面のときだけ**出し、セットアップ画面では undefined（行ごと出さない）。
+ * ヘッダーに出す運用方向の 1 行。**メイン画面のときだけ**出し、セットアップ画面・設定画面では undefined（行ごと出さない）。
  * 「常時表示する」（AC-P2-52）は S-02 メイン画面の箇条書きで、未判定でも隠さないという意味。
  * セットアップの間は取得そのものが止まる（listView の `nearbyParamsFor`）ので、
- * そこで「判定中」と出すと進行中の判定が無いのに判定中だと言うことになる
+ * そこで「判定中」と出すと進行中の判定が無いのに判定中だと言うことになる。
+ * 設定画面は一覧も地図も出さない画面なので、そこでも出さない（W6）
  */
 export function airportOpsHeaderFor(
   screen: AppScreen,

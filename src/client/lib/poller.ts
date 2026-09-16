@@ -57,7 +57,7 @@ export type PollerState = {
 export type PollerOptions<P> = {
   /** 条件 `params` で 1 回取得する。`signal` が中断されたら中断の例外（`isAbortError`）で失敗してよい */
   load: (params: P, signal: AbortSignal) => Promise<NearbyResponse>;
-  /** 自動更新の間隔（ms）。既定 10 秒 */
+  /** 自動更新の間隔（ms）の初期値。既定 10 秒（後から `setIntervalMs` で変えられる） */
   intervalMs?: number;
   /** 要求の期限（ms）。既定 15 秒。過ぎたら要求を中断し、失敗（「応答がありません」）に数える */
   requestTimeoutMs?: number;
@@ -83,6 +83,11 @@ export type Poller<P> = {
    * 開始済みかつ表示中なら進行中の要求を中断して即座に 1 本送り、刻みをそこから数え直す
    */
   setParams(params: P): void;
+  /**
+   * 自動更新の間隔を変える（F-06 の設定。再読み込みなしで実行中のポーリングに反映する。AC-P2-74）。
+   * 開始済みなら刻みのタイマーを作り直す（次の刻みはここから `intervalMs` 後）。要求はここでは送らない
+   */
+  setIntervalMs(intervalMs: number): void;
   /** 自動更新をやめる（タイマーと可視状態の購読を解除し、進行中の要求を中断する） */
   stop(): void;
   /** 現在の状態。状態が変わるまで同じオブジェクトを返す */
@@ -116,13 +121,15 @@ function errorMessage(error: unknown): string {
 export function createPoller<P>(options: PollerOptions<P>): Poller<P> {
   const {
     load,
-    intervalMs = DEFAULT_POLL_INTERVAL_MS,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     paramsKey = JSON.stringify,
     timers,
     visibility,
     now,
   } = options;
+
+  /** 自動更新の間隔（`setIntervalMs` で変わる） */
+  let intervalMs = options.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
 
   /** 最後に覚えた条件 */
   let params: { value: P } | undefined;
@@ -264,6 +271,13 @@ export function createPoller<P>(options: PollerOptions<P>): Poller<P> {
     setParams(next) {
       remember(next);
       if (isStartedAndVisible()) sendNow();
+    },
+
+    setIntervalMs(next) {
+      if (next === intervalMs) return;
+      intervalMs = next;
+      // 開始済みなら新しい間隔で刻み直す（進行中の要求はそのまま。間隔を変えただけで 1 本増やさない）
+      if (running !== undefined) restartTimer(running);
     },
 
     stop() {

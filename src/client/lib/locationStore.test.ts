@@ -1,12 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
   accessStorage,
+  addLocation,
+  APP_STORAGE_KEY,
+  applyLocationEdit,
+  canRemoveLocation,
+  defaultLocationName,
   formatLocationHeader,
+  formatLocationOption,
+  initLocations,
   LOCATION_STORAGE_KEY,
   loadLocation,
+  loadLocations,
+  nextLocationId,
   parseElevationInput,
+  removeLocation,
+  replaceSelectedLocation,
   saveLocation,
+  saveLocations,
+  selectedLocation,
+  selectLocation,
+  type LocationBook,
   type LocationStorage,
+  type NamedLocation,
 } from "./locationStore.ts";
 
 /** Map で中身を持つ偽の storage */
@@ -221,5 +237,285 @@ describe("formatLocationHeader", () => {
 
   it("地点が無ければ「地点: 未設定」", () => {
     expect(formatLocationHeader(undefined)).toBe("地点: 未設定");
+  });
+});
+
+// ---- v2: 複数の地点（AC-P2-70） ----
+
+const HOME: NamedLocation = { id: "loc-1", name: "地点 1", ...NAGAREYAMA };
+const WORK: NamedLocation = { id: "loc-2", name: "地点 2", lat: 35.55, lon: 139.78, elevationM: 5 };
+
+/** v2 のキーに生の文字列が入っている storage */
+function storageWithV2(raw: string, v1?: string) {
+  return memoryStorage(
+    v1 === undefined ? { [APP_STORAGE_KEY]: raw } : { [APP_STORAGE_KEY]: raw, [LOCATION_STORAGE_KEY]: v1 },
+  );
+}
+
+/** v2 のレコードとして保存されている storage */
+function storageWithBook(book: LocationBook) {
+  return storageWithV2(JSON.stringify({ version: 2, locations: book.locations, selectedId: book.selectedId }));
+}
+
+describe("APP_STORAGE_KEY", () => {
+  it("キーは flightboard.app.v2（v1 とは別の 1 本にまとめる）", () => {
+    expect(APP_STORAGE_KEY).toBe("flightboard.app.v2");
+  });
+});
+
+describe("saveLocations / loadLocations", () => {
+  it("保存した一覧と選択をそのまま読み込める（往復）", () => {
+    const { storage } = memoryStorage();
+    const book: LocationBook = { locations: [HOME, WORK], selectedId: "loc-2" };
+    expect(saveLocations(storage, book)).toBe(true);
+    expect(loadLocations(storage)).toEqual(book);
+  });
+
+  it("v2 のキーに version・locations・selectedId をまとめて書く", () => {
+    const { storage, items } = memoryStorage();
+    saveLocations(storage, { locations: [HOME, WORK], selectedId: "loc-2" });
+    expect(JSON.parse(items.get(APP_STORAGE_KEY) ?? "")).toEqual({
+      version: 2,
+      locations: [HOME, WORK],
+      selectedId: "loc-2",
+    });
+  });
+
+  it("保存のたびに v1 キーへ選択中の地点を書き戻す（旧版で開いても最新の地点が出る）", () => {
+    const { storage, items } = memoryStorage();
+    saveLocations(storage, { locations: [HOME, WORK], selectedId: "loc-2" });
+    expect(JSON.parse(items.get(LOCATION_STORAGE_KEY) ?? "")).toEqual({ lat: 35.55, lon: 139.78, elevationM: 5 });
+    // v1 の API でそのまま読める（id・name は v1 には書かない）
+    expect(loadLocation(storage)).toEqual({ lat: 35.55, lon: 139.78, elevationM: 5 });
+  });
+
+  it("同じキーの settings は保ったまま残す（settingsStore の保存値を壊さない）", () => {
+    const { storage, items } = memoryStorage({
+      [APP_STORAGE_KEY]: JSON.stringify({ version: 2, locations: [], settings: { radiusKm: 25 } }),
+    });
+    saveLocations(storage, { locations: [HOME], selectedId: "loc-1" });
+    expect(JSON.parse(items.get(APP_STORAGE_KEY) ?? "")).toEqual({
+      version: 2,
+      locations: [HOME],
+      selectedId: "loc-1",
+      settings: { radiusKm: 25 },
+    });
+  });
+
+  it("一覧が空のときは v1 キーを触らない（旧版の地点を消さない）", () => {
+    const { storage, items } = memoryStorage({ [LOCATION_STORAGE_KEY]: JSON.stringify(NAGAREYAMA) });
+    expect(saveLocations(storage, { locations: [], selectedId: undefined })).toBe(true);
+    expect(JSON.parse(items.get(LOCATION_STORAGE_KEY) ?? "")).toEqual(NAGAREYAMA);
+  });
+
+  it("setItem が例外を投げたら false", () => {
+    const storage: LocationStorage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+    };
+    expect(saveLocations(storage, { locations: [HOME], selectedId: "loc-1" })).toBe(false);
+  });
+
+  it("storage が無い（使えない）ときは読み込みが空の一覧・保存が false", () => {
+    expect(loadLocations(undefined)).toEqual({ locations: [], selectedId: undefined });
+    expect(saveLocations(undefined, { locations: [HOME], selectedId: "loc-1" })).toBe(false);
+  });
+});
+
+describe("loadLocations: v1 からの移行と壊れた保存値", () => {
+  it("v2 が無ければ v1 の地点を 1 件の一覧として読む（名前と識別子を付ける）", () => {
+    const { storage } = memoryStorage({ [LOCATION_STORAGE_KEY]: JSON.stringify(NAGAREYAMA) });
+    expect(loadLocations(storage)).toEqual({ locations: [HOME], selectedId: "loc-1" });
+  });
+
+  it.each([
+    ["JSON として不正", "{version: 2"],
+    ["配列", "[]"],
+    ["locations が無い", JSON.stringify({ version: 2 })],
+    ["locations が配列でない", JSON.stringify({ version: 2, locations: { id: "loc-1" } })],
+    ["版が違う", JSON.stringify({ version: 3, locations: [] })],
+    ["版が無い", JSON.stringify({ locations: [] })],
+  ])("v2 が読めない（%s）ときは v1 の地点に落ちる", (_name, raw) => {
+    const { storage } = storageWithV2(raw, JSON.stringify(NAGAREYAMA));
+    expect(loadLocations(storage)).toEqual({ locations: [HOME], selectedId: "loc-1" });
+  });
+
+  it("v2 も v1 も無ければ空の一覧（セットアップ画面に戻る）", () => {
+    expect(loadLocations(memoryStorage().storage)).toEqual({ locations: [], selectedId: undefined });
+  });
+
+  it("v2 が空の一覧なら v1 には落ちない（削除した地点を復活させない）", () => {
+    const { storage } = storageWithV2(JSON.stringify({ version: 2, locations: [] }), JSON.stringify(NAGAREYAMA));
+    expect(loadLocations(storage)).toEqual({ locations: [], selectedId: undefined });
+  });
+
+  it("一覧の中の不正な 1 件だけを捨てる（他の地点は残す）", () => {
+    const { storage } = storageWithV2(
+      JSON.stringify({
+        version: 2,
+        locations: [
+          HOME,
+          { id: "loc-9", name: "緯度が範囲外", lat: 91, lon: 0, elevationM: 0 },
+          { name: "識別子なし", ...NAGAREYAMA },
+          WORK,
+        ],
+        selectedId: "loc-2",
+      }),
+    );
+    expect(loadLocations(storage)).toEqual({ locations: [HOME, WORK], selectedId: "loc-2" });
+  });
+
+  it("名前が無い・文字列でない地点は識別子を名前にする", () => {
+    const { storage } = storageWithV2(JSON.stringify({ version: 2, locations: [{ id: "loc-1", ...NAGAREYAMA }] }));
+    expect(loadLocations(storage)).toEqual({
+      locations: [{ id: "loc-1", name: "loc-1", ...NAGAREYAMA }],
+      selectedId: "loc-1",
+    });
+  });
+
+  it("選択が一覧に無い・無いときは先頭を選ぶ", () => {
+    const { storage } = storageWithV2(JSON.stringify({ version: 2, locations: [HOME, WORK], selectedId: "loc-9" }));
+    expect(loadLocations(storage)).toEqual({ locations: [HOME, WORK], selectedId: "loc-1" });
+  });
+
+  it("識別子が重なる地点は先に出てきた 1 件だけを残す", () => {
+    const { storage } = storageWithV2(
+      JSON.stringify({ version: 2, locations: [HOME, { ...WORK, id: "loc-1" }], selectedId: "loc-1" }),
+    );
+    expect(loadLocations(storage)).toEqual({ locations: [HOME], selectedId: "loc-1" });
+  });
+});
+
+describe("initLocations", () => {
+  it("v2 が無いときは v1 の地点を v2 として書き出し、v1 キーは消さない（移行）", () => {
+    const { storage, items } = memoryStorage({ [LOCATION_STORAGE_KEY]: JSON.stringify(NAGAREYAMA) });
+    expect(initLocations(storage)).toEqual({ locations: [HOME], selectedId: "loc-1" });
+    expect([...items.keys()].sort()).toEqual([APP_STORAGE_KEY, LOCATION_STORAGE_KEY].sort());
+    expect(JSON.parse(items.get(APP_STORAGE_KEY) ?? "")).toEqual({
+      version: 2,
+      locations: [HOME],
+      selectedId: "loc-1",
+    });
+    expect(loadLocation(storage)).toEqual(NAGAREYAMA);
+  });
+
+  it("v2 から読めたときは書き出さない", () => {
+    const { storage, items } = storageWithBook({ locations: [HOME, WORK], selectedId: "loc-2" });
+    const before = items.get(APP_STORAGE_KEY);
+    expect(initLocations(storage)).toEqual({ locations: [HOME, WORK], selectedId: "loc-2" });
+    expect(items.get(APP_STORAGE_KEY)).toBe(before);
+    expect(items.has(LOCATION_STORAGE_KEY)).toBe(false);
+  });
+
+  it("v2 も v1 も無ければ何も書かない（セットアップ前に空のレコードを作らない）", () => {
+    const { storage, items } = memoryStorage();
+    expect(initLocations(storage)).toEqual({ locations: [], selectedId: undefined });
+    expect([...items.keys()]).toEqual([]);
+  });
+
+  it("書き出しに失敗しても読めた内容を返す", () => {
+    const storage: LocationStorage = {
+      getItem: (key) => (key === LOCATION_STORAGE_KEY ? JSON.stringify(NAGAREYAMA) : null),
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+    };
+    expect(initLocations(storage)).toEqual({ locations: [HOME], selectedId: "loc-1" });
+  });
+});
+
+describe("nextLocationId / defaultLocationName", () => {
+  it("空の一覧では loc-1 と「地点 1」", () => {
+    expect(nextLocationId([])).toBe("loc-1");
+    expect(defaultLocationName([])).toBe("地点 1");
+  });
+
+  it("既存と重ならない最小の番号を使う（削除した番号は空きとして埋める）", () => {
+    expect(nextLocationId([HOME, WORK])).toBe("loc-3");
+    expect(defaultLocationName([HOME, WORK])).toBe("地点 3");
+    expect(nextLocationId([WORK])).toBe("loc-1");
+    expect(defaultLocationName([WORK])).toBe("地点 1");
+  });
+});
+
+describe("addLocation / selectLocation / removeLocation / replaceSelectedLocation", () => {
+  const BOOK: LocationBook = { locations: [HOME, WORK], selectedId: "loc-1" };
+
+  it("足した地点を末尾に置き、それを選択する", () => {
+    const next = addLocation(BOOK, { lat: 43.06, lon: 141.35, elevationM: 20 });
+    expect(next).toEqual({
+      locations: [HOME, WORK, { id: "loc-3", name: "地点 3", lat: 43.06, lon: 141.35, elevationM: 20 }],
+      selectedId: "loc-3",
+    });
+  });
+
+  it("空の一覧に足すと 1 件目になる", () => {
+    expect(addLocation({ locations: [], selectedId: undefined }, NAGAREYAMA)).toEqual({
+      locations: [HOME],
+      selectedId: "loc-1",
+    });
+  });
+
+  it("地点を切り替える。一覧に無い識別子では変えない", () => {
+    expect(selectLocation(BOOK, "loc-2").selectedId).toBe("loc-2");
+    expect(selectLocation(BOOK, "loc-9")).toBe(BOOK);
+  });
+
+  it("選択中の地点は座標・標高だけを置き換え、名前と識別子を保つ", () => {
+    const next = replaceSelectedLocation(BOOK, { lat: 35.9, lon: 139.9, elevationM: 20 });
+    expect(next).toEqual({
+      locations: [{ id: "loc-1", name: "地点 1", lat: 35.9, lon: 139.9, elevationM: 20 }, WORK],
+      selectedId: "loc-1",
+    });
+  });
+
+  it("選択が無い（一覧が空）ときの置き換えは追加になる", () => {
+    expect(replaceSelectedLocation({ locations: [], selectedId: undefined }, NAGAREYAMA)).toEqual({
+      locations: [HOME],
+      selectedId: "loc-1",
+    });
+  });
+
+  it("削除したのが選択中なら残りの先頭を選ぶ", () => {
+    expect(removeLocation(BOOK, "loc-1")).toEqual({ locations: [WORK], selectedId: "loc-2" });
+  });
+
+  it("選択中でない地点を削除しても選択は変わらない", () => {
+    expect(removeLocation(BOOK, "loc-2")).toEqual({ locations: [HOME], selectedId: "loc-1" });
+  });
+
+  it("最後の 1 件と、一覧に無い識別子では削除しない", () => {
+    const single: LocationBook = { locations: [HOME], selectedId: "loc-1" };
+    expect(canRemoveLocation(single)).toBe(false);
+    expect(removeLocation(single, "loc-1")).toBe(single);
+    expect(canRemoveLocation(BOOK)).toBe(true);
+    expect(removeLocation(BOOK, "loc-9")).toBe(BOOK);
+  });
+
+  it("選択中の地点。選択が無ければ先頭、一覧が空なら undefined", () => {
+    expect(selectedLocation(BOOK)).toEqual(HOME);
+    expect(selectedLocation({ locations: [HOME, WORK], selectedId: undefined })).toEqual(HOME);
+    expect(selectedLocation({ locations: [], selectedId: undefined })).toBeUndefined();
+  });
+});
+
+describe("applyLocationEdit", () => {
+  const BOOK: LocationBook = { locations: [HOME], selectedId: "loc-1" };
+
+  it("add なら新しい地点として足す", () => {
+    expect(applyLocationEdit(BOOK, "add", { lat: 35.9, lon: 139.9, elevationM: 20 }).locations).toHaveLength(2);
+  });
+
+  it("change なら選択中の地点を置き換える", () => {
+    const next = applyLocationEdit(BOOK, "change", { lat: 35.9, lon: 139.9, elevationM: 20 });
+    expect(next.locations).toEqual([{ id: "loc-1", name: "地点 1", lat: 35.9, lon: 139.9, elevationM: 20 }]);
+  });
+});
+
+describe("formatLocationOption", () => {
+  it("名前と座標・標高を並べる", () => {
+    expect(formatLocationOption(HOME)).toBe("地点 1: 35.8709, 139.9256（標高 15m）");
   });
 });

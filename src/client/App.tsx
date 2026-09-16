@@ -6,6 +6,7 @@ import { DetailPanel } from "./components/DetailPanel.tsx";
 import { FlightList } from "./components/FlightList.tsx";
 import { ListToolbar } from "./components/ListToolbar.tsx";
 import { MapPane } from "./components/MapPane.tsx";
+import { SettingsScreen } from "./components/SettingsScreen.tsx";
 import { SetupScreen } from "./components/SetupScreen.tsx";
 import { useFlightDetail } from "./hooks/useFlightDetail.ts";
 import { useNearby } from "./hooks/useNearby.ts";
@@ -15,8 +16,6 @@ import { airportOpsHeaderFor } from "./lib/estimateView.ts";
 import type { SortMode } from "./lib/flightRows.ts";
 import {
   advanceWidenFocus,
-  DEFAULT_KIND_OPTION,
-  DEFAULT_RADIUS_KM,
   DEFAULT_SORT,
   focusAfterDetailClose,
   listBody,
@@ -29,12 +28,19 @@ import {
 } from "./lib/listView.ts";
 import {
   accessStorage,
+  applyLocationEdit,
   formatLocationHeader,
-  loadLocation,
-  saveLocation,
+  initLocations,
+  removeLocation,
+  saveLocations,
+  selectedLocation,
+  selectLocation,
   type Location,
+  type LocationBook,
+  type LocationEditMode,
 } from "./lib/locationStore.ts";
 import { reuseTrack, type SelectedTrack } from "./lib/mapView.ts";
+import { loadSettings, saveSettings, SETTINGS_OPEN_LABEL, type Settings } from "./lib/settingsStore.ts";
 import { appScreen, focusTargetOnScreenChange, LOCATION_CHANGE_LABEL, type AppScreen } from "./lib/setupFlow.ts";
 
 // App の状態が変わっても、セットアップ画面（地図とドラッグ中のピン）を描き直さない。
@@ -50,17 +56,44 @@ const NO_FLIGHTS: readonly Flight[] = [];
 
 export function App() {
   const [storage] = useState(() => accessStorage(() => window.localStorage));
-  const [location, setLocation] = useState<Location | undefined>(() => loadLocation(storage));
-  const [editing, setEditing] = useState(false);
+  // 登録した地点（v2。起動時に v1 から移行する）と設定。どちらも同じ 1 本のキーに保存する
+  const [book, setBook] = useState<LocationBook>(() => initLocations(storage));
+  const [settings, setSettings] = useState<Settings>(() => loadSettings(storage));
+  // 地点か設定の保存に失敗しているか（設定画面に出す。plan「エラー処理について」2）
+  const [saveFailed, setSaveFailed] = useState(false);
+  // セットアップ画面を開いている目的（undefined なら開いていない）と、設定画面を開いているか
+  const [editing, setEditing] = useState<LocationEditMode | undefined>(undefined);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const previousScreen = useRef<AppScreen | undefined>(undefined);
   const setupHeadingRef = useRef<HTMLHeadingElement>(null);
+  const settingsHeadingRef = useRef<HTMLHeadingElement>(null);
   const locationChangeRef = useRef<HTMLButtonElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
 
-  // 一覧の条件と選択（保存しない。plan p1b「仮決めした解釈」）
-  const [radiusKm, setRadiusKm] = useState<number>(DEFAULT_RADIUS_KM);
-  const [kindOption, setKindOption] = useState<KindOptionValue>(DEFAULT_KIND_OPTION);
+  // 半径と表示する種類は設定（localStorage）に持つ。ツールバーから変えても設定へ書き戻す（二重管理にしない。F-09・F-03）
+  const location = selectedLocation(book);
+  const radiusKm = settings.radiusKm;
+  const kindOption = settings.kindOption;
+
+  // 一覧の並び替えと選択（保存しない。F-09 の項目ではない）
   const [sortMode, setSortMode] = useState<SortMode>(DEFAULT_SORT);
   const [selectedHex, setSelectedHex] = useState<string | undefined>(undefined);
+
+  // 地点・設定の変更はこの 2 つを通して保存する（保存に失敗しても、この起動中は新しい値で進める）
+  const applyBook = useCallback(
+    (next: LocationBook) => {
+      setBook(next);
+      setSaveFailed(!saveLocations(storage, next));
+    },
+    [storage],
+  );
+  const applySettings = useCallback(
+    (next: Settings) => {
+      setSettings(next);
+      setSaveFailed(!saveSettings(storage, next));
+    },
+    [storage],
+  );
 
   // 「半径を広げる」の後にフォーカスを移す先の待ちと、移す先の要素
   const [widenPhase, setWidenPhase] = useState<WidenFocusPhase>("idle");
@@ -71,25 +104,25 @@ export function App() {
   // 利用者の操作の後、選択（詳細パネル）を保つか消すかは lib の表（selectionAfterUserAction）が決める
   const handleConfirm = useCallback(
     (next: Location) => {
-      // 保存に失敗しても（localStorage が使えない等）この起動中は新しい地点で進める
-      saveLocation(storage, next);
-      setLocation(next);
-      setEditing(false);
+      // 足すか置き換えるかは lib の applyLocationEdit が開いた目的から決める
+      applyBook(applyLocationEdit(book, editing ?? "change", next));
+      setEditing(undefined);
       setSelectedHex((hex) => selectionAfterUserAction(hex, "location-confirm"));
     },
-    [storage],
+    [applyBook, book, editing],
   );
 
   const handleCancel = useCallback(() => {
-    setEditing(false);
+    setEditing(undefined);
     setSelectedHex((hex) => selectionAfterUserAction(hex, "location-cancel"));
   }, []);
 
-  const screen = appScreen(location, editing);
+  const screen = appScreen(location, editing !== undefined, settingsOpen);
 
-  const nearby = useNearby(nearbyParamsFor(screen, location, radiusKm, kindOption));
+  // 設定の更新間隔は poller に渡して、再読み込みなしで実行中のポーリングに反映する（AC-P2-74）
+  const nearby = useNearby(nearbyParamsFor(screen, location, radiusKm, kindOption), settings.intervalMs);
   // 空港の運用方向（ヘッダーの表示と、詳細の「経路」の「運用方向」に使う）。
-  // ヘッダーに出すかと文言は lib の airportOpsHeaderFor が決める（セットアップ画面では undefined）
+  // ヘッダーに出すかと文言は lib の airportOpsHeaderFor が決める（セットアップ画面・設定画面では undefined）
   const airportOps = nearby.data?.airportOps;
   const airportOpsHeader = airportOpsHeaderFor(screen, airportOps);
   // 行と本体は常に poller の状態（nearby）から作る（条件のキーが変わると poller がデータを消す）
@@ -131,8 +164,12 @@ export function App() {
     previousScreen.current = screen;
     if (target === "setup-heading") {
       setupHeadingRef.current?.focus();
+    } else if (target === "settings-heading") {
+      settingsHeadingRef.current?.focus();
     } else if (target === "location-change") {
       locationChangeRef.current?.focus();
+    } else if (target === "settings-button") {
+      settingsButtonRef.current?.focus();
     }
   }, [screen]);
 
@@ -150,7 +187,7 @@ export function App() {
   }, [widenPhase, body]);
 
   const handleWidenRadius = (next: number) => {
-    setRadiusKm(next);
+    applySettings({ ...settings, radiusKm: next });
     setWidenPhase("requested");
     setSelectedHex((hex) => selectionAfterUserAction(hex, "radius"));
   };
@@ -161,20 +198,38 @@ export function App() {
     setWidenPhase((phase) => widenPhaseAfterUserAction(phase, "sort"));
     setSelectedHex((hex) => selectionAfterUserAction(hex, "sort"));
   };
+  // ツールバーでの変更も設定に書き戻す（設定画面と同じ値を見る。plan「仮決めした解釈」）
   const handleKindChange = (next: KindOptionValue) => {
-    setKindOption(next);
+    applySettings({ ...settings, kindOption: next });
     setWidenPhase((phase) => widenPhaseAfterUserAction(phase, "kind"));
     setSelectedHex((hex) => selectionAfterUserAction(hex, "kind"));
   };
   const handleRadiusChange = (next: number) => {
-    setRadiusKm(next);
+    applySettings({ ...settings, radiusKm: next });
     setWidenPhase((phase) => widenPhaseAfterUserAction(phase, "radius"));
     setSelectedHex((hex) => selectionAfterUserAction(hex, "radius"));
   };
-  const handleLocationChange = () => {
-    setEditing(true);
+  // セットアップ画面を開く（一覧から離れるので、［地点を変更］と同じ扱いで待ちと選択を決める）
+  const openSetup = (mode: LocationEditMode) => {
+    setEditing(mode);
     setWidenPhase((phase) => widenPhaseAfterUserAction(phase, "location-change"));
     setSelectedHex((hex) => selectionAfterUserAction(hex, "location-change"));
+  };
+  const handleLocationChange = () => openSetup("change");
+  const handleSettingsOpen = () => {
+    setSettingsOpen(true);
+    setWidenPhase((phase) => widenPhaseAfterUserAction(phase, "location-change"));
+    setSelectedHex((hex) => selectionAfterUserAction(hex, "location-change"));
+  };
+  const handleSettingsClose = () => setSettingsOpen(false);
+  // 地点の切り替えは地点の確定と同じ扱い（前の地点で選んだ機体の詳細を、新しい地点からの距離・方角で出したままにしない）
+  const handleSelectLocation = (id: string) => {
+    applyBook(selectLocation(book, id));
+    setSelectedHex((hex) => selectionAfterUserAction(hex, "location-confirm"));
+  };
+  const handleRemoveLocation = (id: string) => {
+    applyBook(removeLocation(book, id));
+    setSelectedHex((hex) => selectionAfterUserAction(hex, "location-confirm"));
   };
   // 一覧での選択と地図のアイコンでの選択は同じハンドラを通す。地図の memo を保つため参照は変えない
   const handleSelect = useCallback((hex: string) => {
@@ -200,6 +255,12 @@ export function App() {
         {/* 対象空港の運用方向（S-02・AC-P2-52）。S-02 の画面図どおり［変更］の後ろに置く。
             メイン画面では常に出し、まだ決まっていない空港は「判定中」と出す（出すかどうかも文言も lib/estimateView.ts） */}
         {airportOpsHeader !== undefined ? <p className="app-airport-ops">{airportOpsHeader}</p> : null}
+        {/* ［設定］（S-02 の画面図どおり運用方向の後ろ）。設定画面・セットアップ画面では出さない（戻る先のボタンは各画面が持つ） */}
+        {screen === "main" ? (
+          <button type="button" className="app-settings-open" ref={settingsButtonRef} onClick={handleSettingsOpen}>
+            {SETTINGS_OPEN_LABEL}
+          </button>
+        ) : null}
       </header>
 
       {screen === "setup" ? (
@@ -208,6 +269,19 @@ export function App() {
           headingRef={setupHeadingRef}
           onConfirm={handleConfirm}
           onCancel={handleCancel}
+        />
+      ) : screen === "settings" ? (
+        <SettingsScreen
+          book={book}
+          settings={settings}
+          saveFailed={saveFailed}
+          headingRef={settingsHeadingRef}
+          onSelectLocation={handleSelectLocation}
+          onAddLocation={() => openSetup("add")}
+          onEditLocation={() => openSetup("change")}
+          onRemoveLocation={handleRemoveLocation}
+          onSettingsChange={applySettings}
+          onClose={handleSettingsClose}
         />
       ) : (
         <main className="app-main">

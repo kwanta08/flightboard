@@ -149,6 +149,13 @@ describe("nearbyParamsFor（取得の条件）", () => {
     expect(nearbyParamsFor("main", undefined, 50, "passenger,cargo")).toBeUndefined();
   });
 
+  // 設定画面では半径・更新間隔を変えられる。止めずに続けて、戻ったときには新しい条件の結果が出ているようにする（W6）
+  it("設定画面の間は止めない（メイン画面と同じ条件）", () => {
+    expect(nearbyParamsFor("settings", NAGAREYAMA, 50, "passenger,cargo")).toStrictEqual(
+      nearbyParamsFor("main", NAGAREYAMA, 50, "passenger,cargo"),
+    );
+  });
+
   it("メイン画面では地点の緯度・経度と半径を渡す（標高は送らない）", () => {
     expect(nearbyParamsFor("main", NAGAREYAMA, 25, "passenger,cargo")).toStrictEqual({
       lat: 35.8709,

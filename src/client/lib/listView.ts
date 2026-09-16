@@ -118,7 +118,8 @@ export function widenRadiusLabel(km: number): string {
 
 /**
  * 周辺の機体の取得条件。セットアップ画面の間と、地点が無いときは undefined（取得しない。
- * 地点が決まってメイン画面に戻ったら条件が決まり、取得し直す）
+ * 地点が決まってメイン画面に戻ったら条件が決まり、取得し直す）。
+ * 設定画面（S-04）の間は止めない（半径・更新間隔を変えた結果が、戻ったときに反映済みになるようにする。W6）
  */
 export function nearbyParamsFor(
   screen: AppScreen,
