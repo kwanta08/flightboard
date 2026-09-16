@@ -99,11 +99,6 @@ export function aircraftAriaLabel(flight: Pick<Flight, "hex" | "callsign"> & Par
   return flight.kind === "cargo" ? `${name}（${CARGO_BADGE_LABEL}）を選択` : `${name} を選択`;
 }
 
-/** フォーカスしたアイコンで押すと選択するキー（Enter・Space。Leaflet 1.9 はマーカーの Enter を click にしない） */
-export function isSelectKey(key: string): boolean {
-  return key === "Enter" || key === " ";
-}
-
 /** 選択中のアイコンを手前に出す z-index の加算 */
 export function aircraftZIndexOffset(selected: boolean): number {
   return selected ? SELECTED_Z_INDEX_OFFSET : 0;

@@ -7,7 +7,6 @@ import {
   aircraftAriaLabel,
   aircraftMarkers,
   aircraftZIndexOffset,
-  isSelectKey,
   type LatLngPair,
   radiusBounds,
   radiusMeters,
@@ -210,17 +209,6 @@ describe("radiusViewChanged（地点・半径が変わったときだけ表示�
     expect(radiusViewChanged(view, { ...view, lat: 35.88 })).toBe(true);
     expect(radiusViewChanged(view, { ...view, lon: 139.94 })).toBe(true);
     expect(radiusViewChanged(view, { ...view, radiusKm: 100 })).toBe(true);
-  });
-});
-
-describe("isSelectKey", () => {
-  it("Enter と Space で選択する", () => {
-    expect(isSelectKey("Enter")).toBe(true);
-    expect(isSelectKey(" ")).toBe(true);
-  });
-
-  it.each(["Escape", "ArrowUp", "Tab", "a"])("%s では選択しない", (key) => {
-    expect(isSelectKey(key)).toBe(false);
   });
 });
 

@@ -70,6 +70,8 @@ describe("composeApp: 時計の共有（AC-A8・AC-A16・M2-3）", () => {
         });
       }
       if (url.hostname === "api.adsbdb.com") return jsonResponse({ response: "not found" }, 404);
+      // 詳細では写真も照会する（写真の無い機体）
+      if (url.hostname === "api.planespotters.net") return jsonResponse({ photos: [] });
       return unexpectedUpstream();
     });
 
@@ -91,7 +93,12 @@ describe("composeApp: 時計の共有（AC-A8・AC-A16・M2-3）", () => {
     expect(detail.body.flight).not.toHaveProperty("aircraft");
 
     // 位置の上流への要求は 1 回目の取得の 1 本だけ（2 回目はキャッシュから返した）
-    expect(t.urls.filter((url) => url.hostname !== "api.adsbdb.com").map((url) => url.hostname)).toEqual(["api.adsb.lol"]);
+    const upstreams = t.urls.filter((url) => url.hostname !== "api.adsbdb.com" && url.hostname !== "api.planespotters.net");
+    expect(upstreams.map((url) => url.hostname)).toEqual(["api.adsb.lol"]);
+    // 写真の提供元は詳細のときだけ、その機体の hex で 1 回照会する
+    expect(t.urls.filter((url) => url.hostname === "api.planespotters.net").map((url) => url.pathname)).toEqual([
+      "/pub/photos/hex/86d7a4",
+    ]);
   });
 });
 

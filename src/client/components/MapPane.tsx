@@ -1,5 +1,5 @@
 // 地図ペイン（AC-B10・AC-B11）。判断は lib/mapView・lib/mapIcons・lib/deadReckoning に置き、ここは react-leaflet への配線だけを行う。
-import { divIcon, type DivIcon, type LeafletKeyboardEvent, type Marker as LeafletMarker, type PathOptions } from "leaflet";
+import { divIcon, type DivIcon, type Marker as LeafletMarker, type PathOptions } from "leaflet";
 import { memo, useEffect, useMemo, useRef } from "react";
 import { Circle, MapContainer, Marker, Polyline, TileLayer, useMap } from "react-leaflet";
 import type { Flight } from "../../shared/types.ts";
@@ -8,7 +8,6 @@ import { OSM_ATTRIBUTION, OSM_TILE_URL } from "../lib/credits.ts";
 import { observerIcon, type MapIconSpec } from "../lib/mapIcons.ts";
 import {
   aircraftMarkers,
-  isSelectKey,
   type LatLngPair,
   radiusBounds,
   radiusMeters,
@@ -81,18 +80,7 @@ type AircraftMarkerProps = {
 const AircraftMarker = memo(function AircraftMarker({ hex, position, icon, label, zIndexOffset, onSelect }: AircraftMarkerProps) {
   const markerRef = useRef<LeafletMarker>(null);
 
-  const handlers = useMemo(
-    () => ({
-      click: () => onSelect(hex),
-      // キーボードでフォーカスしたアイコンを Enter・Space で選ぶ（Leaflet はマーカーの Enter を click にしない）
-      keydown: (event: LeafletKeyboardEvent) => {
-        if (!isSelectKey(event.originalEvent.key)) return;
-        event.originalEvent.preventDefault();
-        onSelect(hex);
-      },
-    }),
-    [hex, onSelect],
-  );
+  const handlers = useMemo(() => ({ click: () => onSelect(hex) }), [hex, onSelect]);
 
   // Leaflet は title をアイコンの要素を作ったときにしか付けないので、ボタン名が変わったら付け直す
   useEffect(() => {
@@ -100,14 +88,15 @@ const AircraftMarker = memo(function AircraftMarker({ hex, position, icon, label
   }, [label]);
 
   // ボタン名は title（と上の effect での付け直し）だけで付く。
-  // alt は Leaflet が img のアイコンにしか付けず、divIcon（div の要素）では効かないので渡さない
+  // alt は Leaflet が img のアイコンにしか付けず、divIcon（div の要素）では効かないので渡さない。
+  // keyboard={false}: キーボード操作の主役は一覧なので、アイコンは Tab の停止点にしない（機体の数だけ Tab が増えるため）
   return (
     <Marker
       ref={markerRef}
       position={position}
       icon={icon}
       title={label}
-      keyboard
+      keyboard={false}
       zIndexOffset={zIndexOffset}
       eventHandlers={handlers}
     />

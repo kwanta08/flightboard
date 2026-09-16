@@ -56,7 +56,12 @@ const FULL_FLIGHT: Flight = makeFlight({
   route: { origin: HND, destination: FUK, source: "adsbdb" },
   aircraft: {
     model: "Boeing 787-8",
-    photo: { url: "https://image.example.test/full/1.jpg", thumbnailUrl: "https://image.example.test/thumb/1.jpg", credit: "Taro Yamada" },
+    photo: {
+      url: "https://image.example.test/full/1.jpg",
+      thumbnailUrl: "https://image.example.test/thumb/1.jpg",
+      credit: "Taro Yamada",
+      link: "https://www.planespotters.net/photo/1",
+    },
   },
 });
 
@@ -140,11 +145,12 @@ describe("buildDetailView: 全項目が揃った詳細の値", () => {
     expect(valueOf(view, "自分との関係", "仰角")).toBe("1.1°");
   });
 
-  it("写真: thumbnailUrl を優先、alt は「<便名> の機体写真」、クレジットは「写真: <credit>」", () => {
+  it("写真: url を優先、alt は「<便名> の機体写真」、クレジットは「写真: <撮影者名>」と写真ページのリンク", () => {
     expect(view.photo).toEqual({
-      src: "https://image.example.test/thumb/1.jpg",
+      src: "https://image.example.test/full/1.jpg",
       alt: "ANA245 の機体写真",
       credit: "写真: Taro Yamada",
+      link: "https://www.planespotters.net/photo/1",
     });
   });
 
@@ -235,34 +241,42 @@ describe("buildDetailView: 機種名", () => {
 });
 
 describe("buildDetailView: 写真", () => {
-  function photoOf(photo: NonNullable<Flight["aircraft"]>["photo"], callsign?: string) {
-    return buildDetailView(makeDetail(makeFlight({ hex: "86e7a0", callsign, aircraft: { photo } })), NAGAREYAMA).photo;
+  const LINK = "https://www.planespotters.net/photo/1";
+  type Photo = NonNullable<NonNullable<Flight["aircraft"]>["photo"]>;
+
+  // 上流が欠けた値を返した場合も試すので、部分的な写真を受け取れるようにする
+  function photoOf(photo: Partial<Photo> | undefined, callsign?: string) {
+    const aircraft = { photo: photo as Photo | undefined };
+    return buildDetailView(makeDetail(makeFlight({ hex: "86e7a0", callsign, aircraft })), NAGAREYAMA).photo;
   }
 
   it("写真が無ければ photo 無し", () => {
     expect(photoOf(undefined, "ANA245")).toBeUndefined();
   });
 
-  it("thumbnailUrl が無ければ url", () => {
-    expect(photoOf({ url: "https://image.example.test/full/2.jpg", credit: "Hanako" }, "ANA245")?.src).toBe(
-      "https://image.example.test/full/2.jpg",
-    );
+  it("url が使えなければ thumbnailUrl", () => {
+    const photo = { url: "javascript:alert(1)", thumbnailUrl: "https://image.example.test/thumb/2.jpg", credit: "Hanako", link: LINK };
+    expect(photoOf(photo, "ANA245")?.src).toBe("https://image.example.test/thumb/2.jpg");
   });
 
-  it("クレジットが無ければ「写真の出典不明」", () => {
-    expect(photoOf({ url: "https://image.example.test/full/2.jpg" }, "ANA245")?.credit).toBe("写真の出典不明");
+  it("撮影者名が無ければ写真を出さない（仕様 §13）", () => {
+    expect(photoOf({ url: "https://image.example.test/full/2.jpg", link: LINK }, "ANA245")).toBeUndefined();
+    expect(photoOf({ url: "https://image.example.test/full/2.jpg", credit: "  ", link: LINK }, "ANA245")).toBeUndefined();
+  });
+
+  it("写真ページのリンクが無ければ写真を出さない（提供元の規約）", () => {
+    expect(photoOf({ url: "https://image.example.test/full/2.jpg", credit: "Hanako" }, "ANA245")).toBeUndefined();
   });
 
   it("便名が無ければ alt は hex で「86e7a0 の機体写真」", () => {
-    expect(photoOf({ url: "https://image.example.test/full/2.jpg" })?.alt).toBe("86e7a0 の機体写真");
+    expect(photoOf({ url: "https://image.example.test/full/2.jpg", credit: "Hanako", link: LINK })?.alt).toBe("86e7a0 の機体写真");
   });
 
-  it("http・https 以外の URL は使わない（thumbnailUrl が不正なら url、どちらも不正なら photo 無し）", () => {
-    expect(photoOf({ url: "https://image.example.test/full/3.jpg", thumbnailUrl: "javascript:alert(1)" }, "ANA245")?.src).toBe(
-      "https://image.example.test/full/3.jpg",
-    );
-    expect(photoOf({ url: "javascript:alert(1)" }, "ANA245")).toBeUndefined();
-    expect(photoOf({ url: "not a url" }, "ANA245")).toBeUndefined();
+  it("http・https 以外の URL は使わない（画像もリンクも）", () => {
+    expect(photoOf({ url: "javascript:alert(1)", credit: "Hanako", link: LINK }, "ANA245")).toBeUndefined();
+    expect(photoOf({ url: "not a url", credit: "Hanako", link: LINK }, "ANA245")).toBeUndefined();
+    const badLink = { url: "https://image.example.test/full/2.jpg", credit: "Hanako", link: "javascript:alert(1)" };
+    expect(photoOf(badLink, "ANA245")).toBeUndefined();
   });
 });
 

@@ -6,6 +6,7 @@ import type { Hono } from "hono";
 import { createAdsbdbClient } from "./adsbdb/client.ts";
 import { createEnrichment } from "./adsbdb/enrichment.ts";
 import { createApp } from "./app.ts";
+import { createPhotoSource } from "./photos/planespotters.ts";
 import { createFallbackProvider } from "./providers/fallback.ts";
 import { createOpenSkyProvider } from "./providers/opensky.ts";
 import type { FetchLike } from "./providers/provider.ts";
@@ -51,6 +52,8 @@ export function composeApp(options: ComposeAppOptions = {}): Hono {
   );
   const adsbdbClient = createAdsbdbClient({ fetch: fetchImpl, now, sleep });
   const enrichment = createEnrichment({ client: adsbdbClient, now });
+  // 機体写真は planespotters（撮影者名とリンクが取れる提供元。仕様 §13）
+  const photos = createPhotoSource({ fetch: fetchImpl, now });
   const tracks = createTrackStore({ now });
-  return createApp({ positions, enrichment, tracks, now, staticRoot });
+  return createApp({ positions, enrichment, photos, tracks, now, staticRoot });
 }

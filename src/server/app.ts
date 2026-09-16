@@ -6,6 +6,7 @@ import { haversineKm } from "../shared/geo.ts";
 import type { LatLon } from "../shared/geo.ts";
 import type { ApiError, Flight, FlightDetailResponse, NearbyResponse } from "../shared/types.ts";
 import type { Enrichment, RouteInfo } from "./adsbdb/enrichment.ts";
+import type { AircraftPhoto, PhotoSource } from "./photos/planespotters.ts";
 import { parseNearbyParams } from "./nearbyParams.ts";
 import { cacheKey, createPositionCache } from "./positionCache.ts";
 import type { CachedPositions, PositionCache } from "./positionCache.ts";
@@ -48,6 +49,11 @@ export type AppOptions = {
    * `/api/flights/:hex` ではルートに加えて機体情報を照会して付ける
    */
   enrichment?: AppEnrichment;
+  /**
+   * 機体写真の提供元（planespotters）。あれば `/api/flights/:hex` で照会し、`aircraft.photo` に付ける。
+   * 照会は機体情報と並行して行い、失敗しても写真無しで返す
+   */
+  photos?: PhotoSource;
   /**
    * 航跡の保持。あれば位置をキャッシュミスで取得するたびに取得した全機体を `record` する（例外はログに出して握りつぶす）。
    * 無ければ `/api/flights/:hex` は常に 404。`cache` と同時に指定すると `createApp` が `TypeError` を投げる
@@ -168,6 +174,12 @@ export function selectTrackedFlight(tracked: Pick<TrackedFlight, "flight">, ageS
   return flight;
 }
 
+/** 機体情報と写真を 1 つにまとめる（AC-A14・仕様 F-05）。どちらも無ければ undefined（`aircraft` を付けない） */
+export function mergeAircraft(aircraft: Flight["aircraft"], photo: AircraftPhoto | undefined): Flight["aircraft"] | undefined {
+  if (photo === undefined) return aircraft;
+  return { ...aircraft, photo };
+}
+
 /** 取得時刻から応答時点までの経過秒。時計が戻った場合に負にならないよう 0 で下支えする */
 function elapsedSec(now: number, fetchedAt: number): number {
   return Math.max(0, (now - fetchedAt) / 1000);
@@ -179,7 +191,7 @@ function flightDetail(tracked: Pick<TrackedFlight, "fetchedAt" | "points">, flig
 }
 
 export function createApp(options: AppOptions): Hono {
-  const { positions, onPositionsLoaded, enrichment, tracks, staticRoot } = options;
+  const { positions, onPositionsLoaded, enrichment, photos, tracks, staticRoot } = options;
   const now = options.now ?? Date.now;
   // 片方を黙って無視しないよう、同時指定は作成時に拒否する
   if (options.cache !== undefined && onPositionsLoaded !== undefined) {
@@ -226,6 +238,19 @@ export function createApp(options: AppOptions): Hono {
     };
     try {
       return target.getAircraft(hex).catch(onError);
+    } catch (error) {
+      return Promise.resolve(onError(error));
+    }
+  }
+
+  /** 写真の照会を始め、決着を待つ Promise を返す。同期の例外・reject はログに出して undefined にする */
+  function startPhotoLookup(source: PhotoSource, hex: string): Promise<AircraftPhoto | undefined> {
+    const onError = (error: unknown): undefined => {
+      console.error("[GET /api/flights/:hex] 機体写真の取得に失敗しました:", error);
+      return undefined;
+    };
+    try {
+      return source.getPhoto(hex).catch(onError);
     } catch (error) {
       return Promise.resolve(onError(error));
     }
@@ -285,17 +310,20 @@ export function createApp(options: AppOptions): Hono {
     if (held === undefined) {
       return c.json({ error: MESSAGE_FLIGHT_NOT_FOUND } satisfies ApiError, 404);
     }
-    if (enrichment === undefined) {
+    if (enrichment === undefined && photos === undefined) {
       return c.json(flightDetail(held.tracked, held.flight), 200);
     }
 
-    // 機体情報の照会を先に始めてから未取得のルートを積む（機体情報の照会をルート照会の後ろに並べない。AC-A14）
-    const aircraftLookup = startAircraftLookup(enrichment, hex);
-    const getRoute = (callsign: string): RouteInfo | undefined => enrichment.getRoute(callsign);
-    enqueueMissingRoutes(enrichment, attachRoutes([held.flight], getRoute).missingCallsigns);
+    // 機体情報・写真の照会を先に始めてから未取得のルートを積む（機体情報の照会をルート照会の後ろに並べない。AC-A14）
+    const aircraftLookup = enrichment === undefined ? undefined : startAircraftLookup(enrichment, hex);
+    const photoLookup = photos === undefined ? undefined : startPhotoLookup(photos, hex);
+    const getRoute = (callsign: string): RouteInfo | undefined => enrichment?.getRoute(callsign);
+    if (enrichment !== undefined) {
+      enqueueMissingRoutes(enrichment, attachRoutes([held.flight], getRoute).missingCallsigns);
+    }
 
-    // 機体情報は照会を待つ。失敗しても機体情報無しで返す
-    const aircraft = await aircraftLookup;
+    // 機体情報と写真は照会を待つ（並行）。失敗してもその部分を欠いたまま返す
+    const [aircraft, photo] = await Promise.all([aircraftLookup, photoLookup]);
 
     // 待っている間に /api/nearby が同じ機体の新しい位置を記録していることがあるので、保持している値を取り直し、
     // 待っている間の経過を含めた応答時点の経過秒で判定し直す（M2-3）。ルートは取り直した機体に応答時点のキャッシュから付ける
@@ -304,7 +332,8 @@ export function createApp(options: AppOptions): Hono {
       return c.json({ error: MESSAGE_FLIGHT_NOT_FOUND } satisfies ApiError, 404);
     }
     let flight = attachRoutes([latest.flight], getRoute).flights[0]!;
-    if (aircraft !== undefined) flight = { ...flight, aircraft };
+    const aircraftWithPhoto = mergeAircraft(aircraft, photo);
+    if (aircraftWithPhoto !== undefined) flight = { ...flight, aircraft: aircraftWithPhoto };
     return c.json(flightDetail(latest.tracked, flight), 200);
   });
 

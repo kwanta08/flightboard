@@ -174,7 +174,7 @@ describe("aircraftAltitudeFt / aircraftAltitudeM", () => {
   });
 });
 
-describe("仕様 6.5 の再現（流山おおたかの森駅から。空港座標は adsbdb）", () => {
+describe("仕様 6.5 の再現（利用地点から。空港座標は adsbdb）", () => {
   const nagareyama = { lat: 35.8709, lon: 139.9256 };
 
   it("羽田 RJTT: 37.8±0.3km・南南西", () => {

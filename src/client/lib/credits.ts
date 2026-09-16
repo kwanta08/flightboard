@@ -11,7 +11,7 @@ export type Credit = {
 
 /**
  * データ提供元のクレジット。仕様 §13 の列挙とは次の点が異なる（plan p1b「仮決めした解釈」）:
- * OurAirports は Phase 1 で使わないので載せず、実際に使う adsb.fi・OpenSky Network・airport-data.com を加える
+ * OurAirports は Phase 1 で使わないので載せず、実際に使う adsb.fi・OpenSky Network・Planespotters.net を加える
  */
 export const CREDITS: readonly Credit[] = [
   { id: "adsblol", label: "adsb.lol（ODbL 1.0）", href: "https://adsb.lol" },
@@ -19,7 +19,8 @@ export const CREDITS: readonly Credit[] = [
   { id: "adsbfi", label: "adsb.fi", href: "https://adsb.fi" },
   { id: "opensky", label: "OpenSky Network", href: "https://opensky-network.org" },
   { id: "adsbdb", label: "adsbdb", href: "https://www.adsbdb.com" },
-  { id: "airport-data", label: "機体写真: airport-data.com", href: "https://www.airport-data.com" },
+  // 機体写真は planespotters.net の API（撮影者名と写真ページのリンクを返す）
+  { id: "planespotters", label: "機体写真: Planespotters.net", href: "https://www.planespotters.net" },
   { id: "osm", label: "© OpenStreetMap contributors", href: "https://www.openstreetmap.org/copyright" },
 ];
 

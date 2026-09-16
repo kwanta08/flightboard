@@ -14,15 +14,12 @@ export const DEFAULT_ADSBDB_TIMEOUT_MS = 5000;
 export const DEFAULT_ADSBDB_RATE_LIMIT_MS = 60_000;
 /** HTTP 429 で要求を送らない時間の上限 */
 export const MAX_ADSBDB_RATE_LIMIT_MS = 86_400_000;
-/** adsbdb に撮影者の欄が無いため、暫定で出典を固定文字列で示す（plan「仮決めした解釈」） */
-export const ADSBDB_PHOTO_CREDIT = "airport-data.com（adsbdb 経由）";
-
 const LABEL = "adsbdb";
 
 export type AdsbdbAirline = { icao: string; iata?: string; name: string };
 export type AdsbdbRoute = { origin: Airport; destination: Airport; source: "adsbdb" };
-export type AdsbdbPhoto = { url: string; thumbnailUrl?: string; credit: string };
-export type AdsbdbAircraft = { model?: string; photo?: AdsbdbPhoto };
+/** 写真は撮影者名が取れないので adsbdb からは使わない（photos/planespotters.ts で取る。仕様 §13） */
+export type AdsbdbAircraft = { model?: string };
 
 /** `airline` は adsbdb が null・欠落を返したとき付けない（M2-1） */
 export type RouteLookup = { status: "found"; airline?: AdsbdbAirline; route: AdsbdbRoute } | { status: "unknown" };
@@ -255,22 +252,8 @@ function parseAircraftResponse(body: unknown): AircraftLookup {
   const modelParts = [nonEmptyString(raw.manufacturer), nonEmptyString(raw.type)].filter(
     (part): part is string => part !== undefined,
   );
-  const url = httpUrl(raw.url_photo);
-  const photo: AdsbdbPhoto | undefined =
-    url === undefined
-      ? undefined
-      : { url, ...definedOnly({ thumbnailUrl: httpUrl(raw.url_photo_thumbnail) }), credit: ADSBDB_PHOTO_CREDIT };
-
   return {
     status: "found",
-    aircraft: definedOnly({ model: modelParts.length > 0 ? modelParts.join(" ") : undefined, photo }),
+    aircraft: definedOnly({ model: modelParts.length > 0 ? modelParts.join(" ") : undefined }),
   };
-}
-
-/** http(s) の絶対 URL の文字列だけを採用する（null・空・他のスキームは undefined） */
-function httpUrl(value: unknown): string | undefined {
-  const text = nonEmptyString(value);
-  if (text === undefined || !URL.canParse(text)) return undefined;
-  const { protocol } = new URL(text);
-  return protocol === "http:" || protocol === "https:" ? text : undefined;
 }

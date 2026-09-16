@@ -149,7 +149,8 @@ describe("上流 URL と User-Agent（AC-A3）", () => {
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0]!.url).toBe("https://api.adsb.lol/v2/point/35.87/139.93/27");
     expect(new Headers(fake.calls[0]!.init.headers).get("User-Agent")).toBe(USER_AGENT);
-    expect(USER_AGENT).toBe("flightboard/0.1 (personal use)");
+    // planespotters の規約に合わせ、連絡先の URL を含める（providers/provider.ts）
+    expect(USER_AGENT).toBe("flightboard/0.1 (+https://github.com/kwanta08/flightboard)");
   });
 
   it("adsb.fi は v3 の /api/v3/lat/{lat}/lon/{lon}/dist/{nm}", async () => {

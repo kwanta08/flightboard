@@ -57,9 +57,8 @@ export const ROUTE_CONFIDENCE_TEXT = "adsbdb による推定";
 /** 進み具合のバーのアクセシブルネーム */
 export const ROUTE_PROGRESS_LABEL = "進み具合";
 
-/** 写真のクレジットの頭と、クレジットが無いときの文言 */
+/** 写真のクレジットの頭（撮影者名の無い写真は出さない。仕様 §13） */
 export const PHOTO_CREDIT_PREFIX = "写真: ";
-export const PHOTO_CREDIT_UNKNOWN = "写真の出典不明";
 
 /** F-05 の区分（Phase 1 分） */
 export const DETAIL_SECTION_TITLES = {
@@ -99,12 +98,14 @@ export type DetailItem = { label: string; value: string };
 export type DetailSection = { title: string; items: DetailItem[] };
 
 export type DetailPhoto = {
-  /** `thumbnailUrl` 優先、無ければ `url` */
+  /** 表示する画像（`url` 優先、無ければ `thumbnailUrl`） */
   src: string;
   /** 「<便名> の機体写真」 */
   alt: string;
-  /** 「写真: <credit>」、無ければ「写真の出典不明」 */
+  /** 「写真: <撮影者名>」 */
   credit: string;
+  /** クレジットからたどる写真ページ（提供元の規約で必要） */
+  link: string;
 };
 
 export type DetailRoute = {
@@ -230,20 +231,18 @@ function photoUrl(text: string | undefined): string | undefined {
   return url !== undefined && isHttpUrl(url) ? url : undefined;
 }
 
+/** 撮影者名・写真ページのリンク・http(s) の画像 URL が揃っている写真だけを出す（仕様 §13） */
 function buildPhoto(photo: NonNullable<Flight["aircraft"]>["photo"], title: string): DetailPhoto | undefined {
   if (photo === undefined) {
     return undefined;
   }
-  const src = photoUrl(photo.thumbnailUrl) ?? photoUrl(photo.url);
-  if (src === undefined) {
+  const src = photoUrl(photo.url) ?? photoUrl(photo.thumbnailUrl);
+  const credit = nonEmpty(photo.credit);
+  const link = photoUrl(photo.link);
+  if (src === undefined || credit === undefined || link === undefined) {
     return undefined;
   }
-  const credit = nonEmpty(photo.credit);
-  return {
-    src,
-    alt: `${title} の機体写真`,
-    credit: credit === undefined ? PHOTO_CREDIT_UNKNOWN : `${PHOTO_CREDIT_PREFIX}${credit}`,
-  };
+  return { src, alt: `${title} の機体写真`, credit: `${PHOTO_CREDIT_PREFIX}${credit}`, link };
 }
 
 function buildRoute(route: NonNullable<Flight["route"]>, current: LatLon): DetailRoute {

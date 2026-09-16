@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EARTH_RADIUS_KM, haversineKm } from "../shared/geo.ts";
 import type { Flight, TrackPoint } from "../shared/types.ts";
-import { ADSBDB_PHOTO_CREDIT } from "./adsbdb/client.ts";
 import type { AdsbdbAircraft, AdsbdbClient } from "./adsbdb/client.ts";
 import { createEnrichment } from "./adsbdb/enrichment.ts";
 import type { RouteInfo } from "./adsbdb/enrichment.ts";
@@ -452,9 +451,14 @@ const ANA245_ROUTE: RouteInfo = {
 /** adsbdb の航空会社が null だった便（M2-1）。route だけを持つ */
 const NCA001_ROUTE: RouteInfo = { route: { origin: FUK, destination: HND, source: "adsbdb" } };
 
-const B789: AdsbdbAircraft = {
-  model: "Boeing 787 9",
-  photo: { url: "https://example.test/photo.jpg", thumbnailUrl: "https://example.test/thumb.jpg", credit: ADSBDB_PHOTO_CREDIT },
+const B789: AdsbdbAircraft = { model: "Boeing 787 9" };
+
+/** planespotters が返す写真（撮影者名と写真ページのリンクが必須。仕様 §13） */
+const PHOTO = {
+  url: "https://t.plnspttrs.net/00142/1974079_280.jpg",
+  thumbnailUrl: "https://t.plnspttrs.net/00142/1974079_t.jpg",
+  credit: "Demo Borstell",
+  link: "https://www.planespotters.net/photo/1974079/ja618a",
 };
 
 /** 呼び出しを記録する偽の enrichment。`routes`・`aircraftImpl`・`enqueueImpl` は途中で差し替えられる */
@@ -848,8 +852,45 @@ describe("GET /api/flights/:hex（AC-A16）", () => {
       track: [trackPoint(2, T0 - 3000), trackPoint(3, T0 + 4000)],
     });
     expect(Object.keys(body).sort()).toEqual(["flight", "track", "updatedAt"]);
-    expect((body.flight as Flight).aircraft?.photo?.credit).toBe(ADSBDB_PHOTO_CREDIT);
     expect(t.enrichment.aircraftCalls).toEqual(["abc123"]);
+  });
+
+  it("写真の提供元があれば aircraft.photo に付ける（機体情報が無くても付く）", async () => {
+    const calls: string[] = [];
+    const photos = {
+      getPhoto: (hex: string) => {
+        calls.push(hex);
+        return Promise.resolve(PHOTO);
+      },
+    };
+    const t = setup(returns([flight("abc123")]), (now) => ({ tracks: createTrackStore({ now }), photos }));
+    await t.get(NEARBY);
+
+    const { res, body } = await t.get("/api/flights/abc123");
+    expect(res.status).toBe(200);
+    expect((body.flight as Flight).aircraft).toEqual({ photo: PHOTO });
+    expect(calls).toEqual(["abc123"]);
+  });
+
+  it("写真の照会が失敗しても 200 で返し、写真を付けない", async () => {
+    const photos = { getPhoto: () => Promise.reject(new Error("boom")) };
+    const t = setup(returns([flight("abc123")]), (now) => ({ tracks: createTrackStore({ now }), photos }));
+    await t.get(NEARBY);
+
+    const { res, body } = await t.get("/api/flights/abc123");
+    expect(res.status).toBe(200);
+    expect((body.flight as Flight).aircraft).toBeUndefined();
+  });
+
+  it("機体情報と写真の両方があれば 1 つの aircraft にまとめる", async () => {
+    const photos = { getPhoto: () => Promise.resolve(PHOTO) };
+    const enrichment = fakeEnrichment({ ANA245: ANA245_ROUTE });
+    enrichment.aircraftImpl = async () => B789;
+    const t = setup(returns([flight("abc123")]), (now) => ({ tracks: createTrackStore({ now }), enrichment, photos }));
+    await t.get(NEARBY);
+
+    const { body } = await t.get("/api/flights/abc123");
+    expect((body.flight as Flight).aircraft).toEqual({ ...B789, photo: PHOTO });
   });
 
   it("保持から 30 秒後の詳細では seenPosSec が保持時の値 +30 になり、保持している値は書き換えない（M2-3）", async () => {

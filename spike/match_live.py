@@ -151,8 +151,8 @@ def main():
     parser = argparse.ArgumentParser(description="手順データと実機の航跡を照合する")
     parser.add_argument("--procedures", required=True)
     parser.add_argument("--tracks-file", help="航跡の保存先（あれば読み込む）")
-    parser.add_argument("--lat", type=float, default=35.8709)  # 流山おおたかの森駅
-    parser.add_argument("--lon", type=float, default=139.9256)
+    parser.add_argument("--lat", type=float, default=35.86)  # 千葉県流山市周辺（仕様 6.5 の利用地点）
+    parser.add_argument("--lon", type=float, default=139.90)
     parser.add_argument("--radius-nm", type=int, default=60)
     parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--interval", type=int, default=10)

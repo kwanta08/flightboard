@@ -182,7 +182,8 @@ describe("URL と User-Agent", () => {
     expect(s.calls).toHaveLength(1);
     expect(s.calls[0]?.url).toBe("https://api.adsbdb.com/v0/callsign/ANA245");
     expect(headerOf(s.calls[0]!.init, "User-Agent")).toBe(USER_AGENT);
-    expect(USER_AGENT).toBe("flightboard/0.1 (personal use)");
+    // planespotters の規約に合わせ、連絡先の URL を含める（providers/provider.ts）
+    expect(USER_AGENT).toBe("flightboard/0.1 (+https://github.com/kwanta08/flightboard)");
   });
 
   it("lookupAircraft は /v0/aircraft/{hex} に User-Agent 付きで要求する", async () => {
@@ -286,44 +287,17 @@ describe("lookupRoute の 200 のパース", () => {
 });
 
 describe("lookupAircraft の 200 のパース", () => {
-  it("model は manufacturer と type を空白で連結、photo は url・thumbnailUrl・credit", async () => {
+  it("model は manufacturer と type を空白で連結する", async () => {
     const s = setup(() => jsonResponse(aircraftBody()));
     const result = await s.client.lookupAircraft("869236");
-    expect(result).toStrictEqual({
-      status: "found",
-      aircraft: {
-        model: "Boeing 787 9",
-        photo: {
-          url: "https://image.airport-data.com/aircraft/000000001.jpg",
-          thumbnailUrl: "https://image.airport-data.com/aircraft/thumbnails/000000001.jpg",
-          credit: "airport-data.com（adsbdb 経由）",
-        },
-      },
-    });
-  });
-
-  it("url_photo: null → photo を付けず model は付ける", async () => {
-    const s = setup(() => jsonResponse(aircraftBody({ url_photo: null, url_photo_thumbnail: null })));
-    const result = await s.client.lookupAircraft("869236");
     expect(result).toStrictEqual({ status: "found", aircraft: { model: "Boeing 787 9" } });
   });
 
-  it("url_photo_thumbnail: null → thumbnailUrl を付けない", async () => {
-    const s = setup(() => jsonResponse(aircraftBody({ url_photo_thumbnail: null })));
+  it("写真は adsbdb から取らない（撮影者名を返さないため。写真は photos/planespotters.ts。仕様 §13）", async () => {
+    const s = setup(() => jsonResponse(aircraftBody()));
     const result = await s.client.lookupAircraft("869236");
-    expect(result).toStrictEqual({
-      status: "found",
-      aircraft: {
-        model: "Boeing 787 9",
-        photo: { url: "https://image.airport-data.com/aircraft/000000001.jpg", credit: "airport-data.com（adsbdb 経由）" },
-      },
-    });
-  });
-
-  it("http(s) 以外の写真 URL は採用しない", async () => {
-    const s = setup(() => jsonResponse(aircraftBody({ url_photo: "javascript:alert(1)", url_photo_thumbnail: "not a url" })));
-    const result = await s.client.lookupAircraft("869236");
-    expect(result).toStrictEqual({ status: "found", aircraft: { model: "Boeing 787 9" } });
+    if (result.status !== "found") throw new Error("expected found");
+    expect("photo" in result.aircraft).toBe(false);
   });
 
   it.each<[string, Record<string, unknown>, { model?: string }]>([

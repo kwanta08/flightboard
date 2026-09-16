@@ -58,7 +58,12 @@ function DetailViewBody({ view }: { view: DetailView }) {
             loading="lazy"
             referrerPolicy="no-referrer"
           />
-          <figcaption className="detail-photo-credit">{view.photo.credit}</figcaption>
+          <figcaption className="detail-photo-credit">
+            {/* 提供元の規約で、クレジットから写真ページへリンクする */}
+            <a href={view.photo.link} target="_blank" rel="noreferrer">
+              {view.photo.credit}
+            </a>
+          </figcaption>
         </figure>
       ) : null}
       {view.route !== undefined ? <RouteBlock route={view.route} /> : null}

@@ -1,8 +1,11 @@
 // 位置の提供元（adsb.lol / adsb.fi / OpenSky）の共通抽象と、上流 HTTP の共通処理。
 import type { Flight } from "../../shared/types.ts";
 
-/** 上流に付ける User-Agent */
-export const USER_AGENT = "flightboard/0.1 (personal use)";
+/**
+ * 上流に付ける User-Agent。
+ * planespotters は規約で連絡先（URL かメール）を含むことを求めるので、リポジトリの URL を入れる（他の提供元にも同じものを送る）
+ */
+export const USER_AGENT = "flightboard/0.1 (+https://github.com/kwanta08/flightboard)";
 
 /** 上流へ渡す検索条件。半径は海里（`kmToUpstreamNm` で換算済み） */
 export type NearbyQuery = { lat: number; lon: number; radiusNm: number };

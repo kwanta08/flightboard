@@ -18,7 +18,8 @@ export type Flight = {
 
   airline?: { icao: string; iata?: string; name: string };
   route?: { origin: Airport; destination: Airport; stops?: Airport[]; source: "adsbdb" };
-  aircraft?: { model?: string; photo?: { url: string; thumbnailUrl?: string; credit?: string } };
+  // 写真は撮影者名（credit）と写真ページ（link）が揃っているものだけ（仕様 §13。提供元は planespotters.net）
+  aircraft?: { model?: string; photo?: { url: string; thumbnailUrl?: string; credit: string; link: string } };
 
   // ★F-10: 経路の推定
   estimate?: {

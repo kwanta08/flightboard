@@ -8,7 +8,7 @@ describe("CREDITS", () => {
     ["adsb.fi", ["adsb.fi"]],
     ["OpenSky Network", ["OpenSky Network"]],
     ["adsbdb", ["adsbdb"]],
-    ["airport-data.com（写真）", ["写真", "airport-data.com"]],
+    ["Planespotters.net（写真）", ["写真", "Planespotters.net"]],
     ["OpenStreetMap", ["© OpenStreetMap contributors"]],
   ] as const)("%s のクレジットがある", (_name, fragments) => {
     expect(CREDITS.some((credit) => fragments.every((fragment) => credit.label.includes(fragment)))).toBe(true);

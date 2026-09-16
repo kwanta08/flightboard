@@ -9,7 +9,7 @@ export type { LatLon };
 export type MapPoint = { lat: number; lng: number };
 
 /** 地点が無いときの地図の仮の中心（仕様 6.5 の利用地点） */
-export const DEFAULT_CENTER: LatLon = { lat: 35.8709, lon: 139.9256 };
+export const DEFAULT_CENTER: LatLon = { lat: 35.86, lon: 139.9 };
 
 /** セットアップ画面の地図の初期ズーム */
 export const SETUP_MAP_ZOOM = 11;

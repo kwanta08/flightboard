@@ -34,8 +34,8 @@ function afterGeolocation(result: GeolocationResult): SetupState {
 }
 
 describe("DEFAULT_CENTER", () => {
-  it("仕様 6.5 の利用地点（流山 35.8709 / 139.9256）", () => {
-    expect(DEFAULT_CENTER).toEqual({ lat: 35.8709, lon: 139.9256 });
+  it("仕様 6.5 の利用地点（千葉県流山市周辺 35.86 / 139.90）", () => {
+    expect(DEFAULT_CENTER).toEqual({ lat: 35.86, lon: 139.9 });
   });
 });
 
@@ -99,7 +99,7 @@ describe("initialSetupState", () => {
   it("初期状態の中心を書き換えても DEFAULT_CENTER は変わらない", () => {
     const state = initialSetupState();
     state.center.lat = 0;
-    expect(DEFAULT_CENTER).toEqual({ lat: 35.8709, lon: 139.9256 });
+    expect(DEFAULT_CENTER).toEqual({ lat: 35.86, lon: 139.9 });
   });
 });
 

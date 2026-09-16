@@ -81,10 +81,7 @@ function foundRoute(callsign: string): Extract<RouteLookup, { status: "found" }>
 
 const UNKNOWN = { status: "unknown" } as const;
 
-const AIRCRAFT: AdsbdbAircraft = {
-  model: "Boeing 787 9",
-  photo: { url: "https://image.airport-data.com/aircraft/000000001.jpg", credit: "airport-data.com（adsbdb 経由）" },
-};
+const AIRCRAFT: AdsbdbAircraft = { model: "Boeing 787 9" };
 
 function callsigns(calls: RouteCall[]): string[] {
   return calls.map((c) => c.callsign);
