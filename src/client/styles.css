@@ -245,6 +245,32 @@ body {
   border-radius: 0.25rem;
 }
 
+/* 経路の推定バッジ（S-02）。確度は「確度:高」の文字でも出しているので、色は補助にとどめる */
+.flight-estimate {
+  padding: 0 0.375em;
+  font-size: 0.75rem;
+  border: 1px solid #8a93a3;
+  border-radius: 0.25rem;
+}
+
+.flight-estimate--high {
+  color: #1b5e34;
+  background: #e7f4ec;
+  border-color: #2e7d4f;
+}
+
+.flight-estimate--medium {
+  color: #6b4b00;
+  background: #fdf5e3;
+  border-color: #b58600;
+}
+
+.flight-estimate--low {
+  color: #4b5563;
+  background: #f1f3f5;
+  border-color: #8a93a3;
+}
+
 /* 地図ペイン: 地図の枠（section「地図」）と詳細パネルの位置の基準。
    詳細パネルは地図の領域の外で地図の枠より前に置き（タブ順を 一覧 → 詳細パネル → 地図 にする）、見た目だけ地図の右側に重ねる */
 .pane-map {

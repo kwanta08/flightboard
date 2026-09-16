@@ -2,6 +2,7 @@
 // 距離・方位・仰角は受信した位置で計算する（補間した位置は地図のアイコンにだけ使う）。
 import { aircraftAltitudeM, bearingDeg, elevationAngleDeg, haversineKm } from "../../shared/geo.ts";
 import type { Flight } from "../../shared/types.ts";
+import { buildEstimateBadge, type EstimateBadge } from "./estimateView.ts";
 import {
   airportShortLabel,
   DASH,
@@ -63,6 +64,8 @@ export type FlightRow = {
   isCargo: boolean;
   /** kind が cargo なら "貨物"（CARGO_BADGE_LABEL）、それ以外は undefined */
   badgeText?: string;
+  /** 経路の推定バッジ（AC-P2-50）。推定が無い機体では undefined（バッジを出さない） */
+  estimateBadge?: EstimateBadge;
 };
 
 /** 見えにくいとする仰角の上限（度、この値未満が hard）。仰角の表示を小数 1 桁にする境界と同じ値 */
@@ -138,6 +141,7 @@ function buildRow(flight: Flight, observer: Observer): FlightRow {
     visibilityLabel: visibilityLabel(visibility),
     isCargo,
     badgeText: isCargo ? CARGO_BADGE_LABEL : undefined,
+    estimateBadge: buildEstimateBadge(flight),
   };
 }
 

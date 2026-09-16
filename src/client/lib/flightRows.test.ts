@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Airport, Flight } from "../../shared/types.ts";
+import { buildEstimateBadge } from "./estimateView.ts";
 import {
   buildRows,
   CARGO_BADGE_LABEL,
@@ -328,6 +329,33 @@ describe("buildRows: 行の表示文字列（AC-B4）", () => {
   it("昇降率 +1000fpm は「▲ 上昇」、0fpm は「― 水平」", () => {
     const rows = buildRows([makeFlight({ hex: "g1", verticalRateFpm: 1000 }), makeFlight({ hex: "g2", verticalRateFpm: 0 })], NAGAREYAMA);
     expect(rows.map((row) => row.trendText)).toEqual(["▲ 上昇", "― 水平"]);
+  });
+});
+
+describe("buildRows: 経路の推定バッジ（AC-P2-50）", () => {
+  it("estimate のある機体の行にバッジが載る（文言は estimateView.ts が決める）", () => {
+    const flight = makeFlight({
+      hex: "p1",
+      estimate: { phase: "arrival", airport: { icao: "RJTT", name: "羽田" }, runway: "22", confidence: 0.9, evidence: [] },
+    });
+    const row = onlyRow(buildRows([flight], NAGAREYAMA));
+    expect(row.estimateBadge).toEqual(buildEstimateBadge(flight));
+    expect(row.estimateBadge?.text).toBe("HND RWY22 進入 確度:高");
+  });
+
+  it("estimate の無い機体の行には載らない", () => {
+    expect(onlyRow(buildRows([makeFlight({ hex: "p2" })], NAGAREYAMA)).estimateBadge).toBeUndefined();
+  });
+
+  it("推定のある機体と無い機体が混ざっても、ある行だけに載る（3000ft ≒ 910m）", () => {
+    const rows = buildRows(
+      [
+        makeFlight({ hex: "p3", estimate: { phase: "enroute", confidence: 0.5, evidence: [] } }),
+        makeFlight({ hex: "p4" }),
+      ],
+      NAGAREYAMA,
+    );
+    expect(rows.map((row) => row.estimateBadge?.text)).toEqual(["通過（巡航 910m）", undefined]);
   });
 });
 

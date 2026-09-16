@@ -91,6 +91,15 @@ function FlightRowContent({ row }: { row: FlightRow }) {
           </>
         ) : null}
       </div>
+      {/* 経路の推定バッジ（AC-P2-50・AC-P2-51）。推定の無い機体では行ごと出さない。
+          ボタン・リンクにしないので Tab の停止点は増えない */}
+      {row.estimateBadge !== undefined ? (
+        <div className="flight-row-line flight-row-estimate">
+          <span className={row.estimateBadge.className} aria-label={row.estimateBadge.label}>
+            {row.estimateBadge.text}
+          </span>
+        </div>
+      ) : null}
     </>
   );
 }
