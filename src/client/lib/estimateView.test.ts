@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CONFIDENCE_HIGH, CONFIDENCE_MEDIUM } from "../../shared/estimate.ts";
-import { aircraftAltitudeM } from "../../shared/geo.ts";
+import { aircraftAltitudeFt } from "../../shared/geo.ts";
 import type { AirportOps, Flight } from "../../shared/types.ts";
 import { finiteOrUndefined, type AltitudeUnit } from "./format.ts";
 import {
@@ -40,9 +40,9 @@ function makeFlight(estimate: Flight["estimate"], altitudeGeomFt = 3000): Flight
   };
 }
 
-/** 一覧の行と同じ呼び方（`buildEstimateBadge` は高度を自分で計算せず、行が計算した m を受け取る） */
+/** 一覧の行と同じ呼び方（`buildEstimateBadge` は高度を自分で計算せず、行が取り出した ft を受け取る） */
 function badgeOf(flight: Pick<Flight, "estimate" | "position">) {
-  return buildEstimateBadge(flight.estimate, finiteOrUndefined(aircraftAltitudeM(flight.position)));
+  return buildEstimateBadge(flight.estimate, finiteOrUndefined(aircraftAltitudeFt(flight.position)));
 }
 
 function badgeTextOf(estimate: Flight["estimate"], altitudeGeomFt?: number): string | undefined {
@@ -205,10 +205,10 @@ describe("buildEstimateBadge: enroute に滑走路が付いた応答（W4 コー
 });
 
 describe("buildEstimateBadge: 高度の単位（F-09・AC-P2-72）", () => {
-  /** 行と同じ呼び方に単位を足したもの（高度は行が計算した m を渡し、表示の単位だけを切り替える） */
+  /** 行と同じ呼び方に単位を足したもの（高度は行が取り出した ft を渡し、表示の単位だけを切り替える） */
   function badgeTextWithUnit(estimate: Flight["estimate"], altitudeUnit: AltitudeUnit, altitudeGeomFt?: number) {
     const flight = makeFlight(estimate, altitudeGeomFt);
-    return buildEstimateBadge(flight.estimate, finiteOrUndefined(aircraftAltitudeM(flight.position)), altitudeUnit)
+    return buildEstimateBadge(flight.estimate, finiteOrUndefined(aircraftAltitudeFt(flight.position)), altitudeUnit)
       ?.text;
   }
 

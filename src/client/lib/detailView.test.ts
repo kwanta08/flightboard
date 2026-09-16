@@ -186,6 +186,18 @@ describe("buildDetailView: 表示の単位（F-09・AC-P2-72）", () => {
     expect(valueOf(view, "飛行状態", "目標高度")).toBe("5,000ft");
   });
 
+  it("25ft 刻みの受信値も ft のまま丸める（875ft → 880ft。W7 コードレビュー MAJOR-1）", () => {
+    // ADS-B の高度は 25ft 刻みで届く。m を経由して丸めると 870ft になり一覧と食い違う
+    // （一覧・推定バッジとの一致は flightRows.test.ts が突き合わせる）
+    const quarter = makeFlight({
+      hex: "86e7a0",
+      position: { lat: 35.552299, lon: 139.779999, altitudeBaroFt: 225, altitudeGeomFt: 875, onGround: false },
+    });
+    const quarterView = buildDetailView(makeDetail(quarter), NAGAREYAMA, undefined, FEET_AND_KNOTS);
+    expect(valueOf(quarterView, "飛行状態", "GNSS 高度")).toBe("880ft");
+    expect(valueOf(quarterView, "飛行状態", "気圧高度")).toBe("230ft");
+  });
+
   it("対地速度は kt", () => {
     expect(valueOf(view, "飛行状態", "対地速度")).toBe("250kt");
   });

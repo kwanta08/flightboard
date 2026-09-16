@@ -78,7 +78,9 @@ function altitudeText(value: number, unit: AltitudeUnit): string {
 
 /**
  * 高度（m）を表示の単位で。10 単位に丸めて桁区切り（例 2011.68 → "2,010m"、単位が ft なら "6,600ft"）。
- * 単位を省くと既定の m（AC-P2-72）
+ * 単位を省くと既定の m（AC-P2-72）。
+ * **元が ft の値（ADS-B の高度）はこれに渡さず `formatAltitudeFt` を使う**。
+ * ft → m → ft の往復では 25ft 刻みの受信値（例 875ft）が 10ft の丸めの境界で逆向きに丸まり、表示が食い違う
  */
 export function formatAltitudeM(meters: MaybeNumber, unit: AltitudeUnit = DEFAULT_UNITS.altitude): string {
   if (!isFiniteNumber(meters)) {

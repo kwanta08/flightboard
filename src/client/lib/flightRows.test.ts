@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Airport, Flight } from "../../shared/types.ts";
+import { buildDetailView } from "./detailView.ts";
 import { buildEstimateBadge } from "./estimateView.ts";
 import {
   buildRows,
@@ -13,7 +14,7 @@ import {
   summaryText,
   visibilityLabel,
 } from "./flightRows.ts";
-import { ELEVATION_ONE_DECIMAL_BELOW_DEG, nonEmpty, type Units } from "./format.ts";
+import { DEFAULT_UNITS, ELEVATION_ONE_DECIMAL_BELOW_DEG, nonEmpty, type Units } from "./format.ts";
 import { TYPE_NAMES, typeDisplayName } from "./typeNames.ts";
 
 // 仕様 6.5 の利用地点（流山）
@@ -339,7 +340,7 @@ describe("buildRows: 経路の推定バッジ（AC-P2-50）", () => {
       estimate: { phase: "arrival", airport: { icao: "RJTT", name: "羽田" }, runway: "22", confidence: 0.9, evidence: [] },
     });
     const row = onlyRow(buildRows([flight], NAGAREYAMA));
-    expect(row.estimateBadge).toEqual(buildEstimateBadge(flight.estimate, row.altitudeM));
+    expect(row.estimateBadge).toEqual(buildEstimateBadge(flight.estimate, row.altitudeFt));
     expect(row.estimateBadge?.text).toBe("HND RWY22 進入 確度:高");
   });
 
@@ -398,6 +399,51 @@ describe("buildRows: 表示の単位（F-09・AC-P2-72）", () => {
     const flights = [makeFlight({ hex: "u2", estimate: { phase: "enroute", confidence: 0.5, evidence: [] } })];
     expect(onlyRow(buildRows(flights, NAGAREYAMA, FEET_AND_KNOTS)).estimateBadge?.text).toBe("通過（巡航 3,000ft）");
     expect(onlyRow(buildRows(flights, NAGAREYAMA)).estimateBadge?.text).toBe("通過（巡航 910m）");
+  });
+});
+
+describe("buildRows: ft 表示の丸めは詳細と一致する（W7 コードレビュー MAJOR-1）", () => {
+  // ADS-B の高度（alt_baro / alt_geom）は 25ft 刻みで届くので x25 / x75 は日常的に出る。
+  // 一覧・バッジが m に換算してから ft に戻していたころは、浮動小数の誤差で 10ft 単位の丸めが
+  // 詳細（ft のまま丸める）と逆向きになり、同じ機体が一覧「870ft」／詳細「880ft」と食い違っていた
+  const FEET: Units = { altitude: "ft", speed: "kmh" };
+
+  function detailAltitudeText(flight: Flight, units: Units): string | undefined {
+    const view = buildDetailView({ updatedAt: "2026-09-16T00:00:00.000Z", flight, track: [] }, NAGAREYAMA, undefined, units);
+    return view.sections
+      .find((section) => section.title === "飛行状態")
+      ?.items.find((item) => item.label === "GNSS 高度")?.value;
+  }
+
+  function enrouteFlightAt(altitudeGeomFt: number): Flight {
+    return makeFlight({
+      hex: "q1",
+      position: { lat: 35.552299, lon: 139.779999, altitudeBaroFt: null, altitudeGeomFt, onGround: false },
+      estimate: { phase: "enroute", confidence: 0.5, evidence: [] },
+    });
+  }
+
+  it.each([875, 225, 1725, 7525])("%sft: 一覧・推定バッジ・詳細が同じ文字", (altitudeGeomFt) => {
+    const flight = enrouteFlightAt(altitudeGeomFt);
+    const row = onlyRow(buildRows([flight], NAGAREYAMA, FEET));
+    const detailText = detailAltitudeText(flight, FEET);
+    expect(row.altitudeText).toBe(detailText);
+    expect(row.estimateBadge?.text).toBe(`通過（巡航 ${detailText}）`);
+  });
+
+  it("875ft は 10ft 単位の四捨五入で「880ft」（切り下げの「870ft」にしない）", () => {
+    const row = onlyRow(buildRows([enrouteFlightAt(875)], NAGAREYAMA, FEET));
+    expect(row.altitudeText).toBe("880ft");
+    expect(row.estimateBadge?.text).toBe("通過（巡航 880ft）");
+    expect(row.altitudeFt).toBe(875); // 行は受信した ft をそのまま持ち、表示はこれを丸める
+  });
+
+  it("m 表示は ft を換算して丸めるので、詳細と同じまま（875ft = 266.7m → 270m）", () => {
+    const flight = enrouteFlightAt(875);
+    const row = onlyRow(buildRows([flight], NAGAREYAMA));
+    expect(row.altitudeText).toBe("270m");
+    expect(row.altitudeText).toBe(detailAltitudeText(flight, DEFAULT_UNITS));
+    expect(row.estimateBadge?.text).toBe("通過（巡航 270m）");
   });
 });
 

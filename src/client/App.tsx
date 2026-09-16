@@ -121,8 +121,9 @@ export function App() {
 
   // セットアップ画面を開いている間に App が描き直されても MemoizedSetupScreen の props を変えないため、
   // 確定のハンドラはいまの一覧と目的を ref から読む（依存を applyBook だけに保ち、ドラッグ中のピンを戻さない）。
-  // 前提: セットアップ画面を出している間、book / editing は利用者の click でしか変わらない
-  // （確定・地点の選択・削除はすべてクリック起点で、その間はポーリングも止まる。listView の nearbyParamsFor）。
+  // 前提: セットアップ画面を出している間、book / editing は利用者操作の離散イベント（click・submit）の
+  // ハンドラでしか変わらない（確定は <form onSubmit>＝クリックでも標高欄の Enter でも起きる。SetupScreen の handleSubmit。
+  // 地点の選択・削除はクリック起点。その間はポーリングも止まる。listView の nearbyParamsFor）。
   // ref の更新は useEffect なので、非同期に book を変える経路を足すと、描画と effect の間の確定が古い一覧を読む
   const bookRef = useRef(book);
   const editingRef = useRef(editing);
