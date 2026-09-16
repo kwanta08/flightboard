@@ -11,7 +11,7 @@ import { useFlightDetail } from "./hooks/useFlightDetail.ts";
 import { useNearby } from "./hooks/useNearby.ts";
 import { CREDITS, DISCLAIMER } from "./lib/credits.ts";
 import { detailRefreshKey, isDetailOpen, trackForSelection } from "./lib/detailState.ts";
-import { buildAirportOpsHeader } from "./lib/estimateView.ts";
+import { airportOpsHeaderFor } from "./lib/estimateView.ts";
 import type { SortMode } from "./lib/flightRows.ts";
 import {
   advanceWidenFocus,
@@ -88,9 +88,10 @@ export function App() {
   const screen = appScreen(location, editing);
 
   const nearby = useNearby(nearbyParamsFor(screen, location, radiusKm, kindOption));
-  // 空港の運用方向（ヘッダーの常時表示と、詳細の「経路」の「運用方向」に使う）
+  // 空港の運用方向（ヘッダーの表示と、詳細の「経路」の「運用方向」に使う）。
+  // ヘッダーに出すかと文言は lib の airportOpsHeaderFor が決める（セットアップ画面では undefined）
   const airportOps = nearby.data?.airportOps;
-  const airportOpsHeader = buildAirportOpsHeader(airportOps);
+  const airportOpsHeader = airportOpsHeaderFor(screen, airportOps);
   // 行と本体は常に poller の状態（nearby）から作る（条件のキーが変わると poller がデータを消す）
   const rows = useMemo(() => listRows({ data: nearby.data, location, sortMode }), [nearby.data, location, sortMode]);
   const body = useMemo(
@@ -186,8 +187,6 @@ export function App() {
       <header className="app-header">
         <h1 className="app-title">FlightBoard</h1>
         <p className="app-location">{formatLocationHeader(location)}</p>
-        {/* 対象空港の運用方向（S-02・AC-P2-52）。常時表示し、まだ決まっていない空港は「判定中」と出す（文言は lib/estimateView.ts） */}
-        <p className="app-airport-ops">{airportOpsHeader}</p>
         {screen === "main" ? (
           <button
             type="button"
@@ -198,6 +197,9 @@ export function App() {
             {LOCATION_CHANGE_LABEL}
           </button>
         ) : null}
+        {/* 対象空港の運用方向（S-02・AC-P2-52）。S-02 の画面図どおり［変更］の後ろに置く。
+            メイン画面では常に出し、まだ決まっていない空港は「判定中」と出す（出すかどうかも文言も lib/estimateView.ts） */}
+        {airportOpsHeader !== undefined ? <p className="app-airport-ops">{airportOpsHeader}</p> : null}
       </header>
 
       {screen === "setup" ? (

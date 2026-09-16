@@ -1,6 +1,6 @@
 // 機体の詳細パネル（AC-B12・AC-B8・AC-B13）。地図ペインの右側に重ねて出す（フォーカスは奪わない）。
 // 表示の判断と文言は lib/detailView.ts・lib/detailState.ts が決め、ここは描画と閉じる操作の受け渡しだけを行う。
-import { useMemo, type KeyboardEvent } from "react";
+import { useId, useMemo, type KeyboardEvent } from "react";
 import type { AirportOps } from "../../shared/types.ts";
 import type { DetailState } from "../lib/detailState.ts";
 import {
@@ -10,6 +10,7 @@ import {
   detailPanelContent,
   isCloseKey,
   ROUTE_PROGRESS_LABEL,
+  type DetailNotes,
   type DetailRoute,
   type DetailView,
 } from "../lib/detailView.ts";
@@ -48,6 +49,29 @@ function RouteBlock({ route }: { route: DetailRoute }) {
   );
 }
 
+/**
+ * 区分に添える補足の一覧（「経路」の区分の根拠。S-03）。
+ * 何の一覧かが目視でも読み上げでも分かるように見出し（「根拠」）を描き、その見出しで一覧に名前を付ける
+ * （list ロールは名前付けできる）。同じ文が並びうるので位置で key を付ける（並べ替えも編集もしない一覧）
+ */
+function SectionNotes({ notes }: { notes: DetailNotes }) {
+  const labelId = useId();
+  return (
+    <>
+      <h4 className="detail-notes-label" id={labelId}>
+        {notes.label}
+      </h4>
+      <ul className="detail-notes" aria-labelledby={labelId}>
+        {notes.lines.map((line, index) => (
+          <li key={index} className="detail-note-item">
+            {line}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
 /** 写真・ルート・各区分 */
 function DetailViewBody({ view }: { view: DetailView }) {
   return (
@@ -81,16 +105,8 @@ function DetailViewBody({ view }: { view: DetailView }) {
               </div>
             ))}
           </dl>
-          {/* 「経路」の区分の根拠（S-03）。同じ文が並びうるので位置で key を付ける（並べ替えも編集もしない一覧） */}
-          {section.notes !== undefined && section.notes.length > 0 ? (
-            <ul className="detail-notes">
-              {section.notes.map((note, index) => (
-                <li key={index} className="detail-note-item">
-                  {note}
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          {/* 根拠は「経路」の区分だけが持つ（無い区分では描かない） */}
+          {section.notes !== undefined && section.notes.lines.length > 0 ? <SectionNotes notes={section.notes} /> : null}
         </section>
       ))}
     </>

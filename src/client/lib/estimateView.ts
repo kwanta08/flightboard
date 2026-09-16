@@ -6,6 +6,7 @@ import { AIRPORT_DISPLAY_NAMES, airportDisplayName } from "../../shared/airports
 import { confidenceLabel, type ConfidenceLabel } from "../../shared/estimate.ts";
 import type { AirportOps, Flight } from "../../shared/types.ts";
 import { DASH, formatAltitudeM, nonEmpty } from "./format.ts";
+import type { AppScreen } from "./setupFlow.ts";
 
 type Estimate = NonNullable<Flight["estimate"]>;
 
@@ -25,8 +26,11 @@ export const CONFIDENCE_PREFIX = "確度:";
 export const ENROUTE_BADGE_TEXT = "通過";
 const CRUISE_LABEL = "巡航";
 
-/** バッジのアクセシブルネームの頭（読み上げでも推定だと分かるようにする。S-03「推定を鵜呑みにさせない」） */
-export const ESTIMATE_BADGE_LABEL_PREFIX = "推定";
+/**
+ * バッジのアクセシブルネームの頭（読み上げでも推定だと分かるようにする。S-03「推定を鵜呑みにさせない」）。
+ * 末尾の空白ごと描画する値なので、区切りの空白をここに含める（`.tsx` で組み立て直さない）
+ */
+export const ESTIMATE_BADGE_SR_PREFIX = "推定 ";
 
 /** バッジのクラス名（styles.css と揃える） */
 export const ESTIMATE_BADGE_CLASS = "flight-estimate";
@@ -42,11 +46,11 @@ export type EstimateBadge = {
   /** バッジに出す文字（例 "HND RWY22 進入 確度:高"・"通過（巡航 11,000m）"） */
   text: string;
   /**
-   * 読み上げられる名前（例 "推定 HND RWY22 進入 確度:高"）。
-   * .tsx は不可視の接頭辞（`ESTIMATE_BADGE_LABEL_PREFIX` ＋ 空白）と `text` を並べてこの名前を作る
+   * 読み上げに足す不可視の接頭辞（"推定 "）。`.tsx` はこれを見えない `<span>` に置き、後ろに `text` を並べる。
+   * 読み上げられる名前は `srPrefix` ＋ `text`（例 "推定 HND RWY22 進入 確度:高"）
    * （素の `<span>` は WAI-ARIA 1.2 の generic ロールで名前付けが禁止されているので `aria-label` は使わない）
    */
-  label: string;
+  srPrefix: typeof ESTIMATE_BADGE_SR_PREFIX;
   /** 確度ラベル。滑走路が決まった進入／出発のときだけ付く（`confidenceLabel`）。無ければ確度を出さない */
   confidence?: ConfidenceLabel;
   /** バッジのクラス名（空白区切り） */
@@ -69,7 +73,7 @@ export function buildEstimateBadge(estimate: Flight["estimate"], altitudeM: numb
   }
   return {
     text,
-    label: `${ESTIMATE_BADGE_LABEL_PREFIX} ${text}`,
+    srPrefix: ESTIMATE_BADGE_SR_PREFIX,
     confidence,
     className:
       confidence === undefined ? ESTIMATE_BADGE_CLASS : `${ESTIMATE_BADGE_CLASS} ${CONFIDENCE_MODIFIERS[confidence]}`,
@@ -170,6 +174,19 @@ export function buildAirportOpsHeader(airportOps: readonly AirportOps[] | undefi
     .join(AIRPORT_OPS_SEPARATOR);
 }
 
+/**
+ * ヘッダーに出す運用方向の 1 行。**メイン画面のときだけ**出し、セットアップ画面では undefined（行ごと出さない）。
+ * 「常時表示する」（AC-P2-52）は S-02 メイン画面の箇条書きで、未判定でも隠さないという意味。
+ * セットアップの間は取得そのものが止まる（listView の `nearbyParamsFor`）ので、
+ * そこで「判定中」と出すと進行中の判定が無いのに判定中だと言うことになる
+ */
+export function airportOpsHeaderFor(
+  screen: AppScreen,
+  airportOps: readonly AirportOps[] | undefined,
+): string | undefined {
+  return screen === "main" ? buildAirportOpsHeader(airportOps) : undefined;
+}
+
 // ---- 詳細の「経路」（F-05・S-03・AC-P2-53） ----
 
 /** 詳細の区分（`DETAIL_SECTION_TITLES` の末尾に足す） */
@@ -195,11 +212,14 @@ const DETAIL_PHASE_LABELS: Readonly<Record<Estimate["phase"], string>> = {
   unknown: DASH,
 };
 
+/** 根拠の見出し（S-03「経路推定の根拠を開示する」。画面にも「根拠」と出す） */
+export const ESTIMATE_NOTES_LABEL = "根拠";
+
 export type EstimateSection = {
   title: typeof ESTIMATE_SECTION_TITLE;
   items: Array<{ label: string; value: string }>;
-  /** 推定の根拠（`estimate.evidence` の各行。S-03「経路推定の根拠を開示する」）。無ければ空 */
-  notes: string[];
+  /** 推定の根拠（見出しと `estimate.evidence` の各行。S-03）。根拠が無ければ `lines` が空 */
+  notes: { label: typeof ESTIMATE_NOTES_LABEL; lines: string[] };
 };
 
 /**
@@ -225,11 +245,22 @@ export function buildEstimateSection(
       { label: labels.airportConfig, value: airportConfigLabel(estimate.airport?.icao, airportOps) ?? DASH },
       { label: labels.confidence, value: confidence ?? DASH },
     ],
-    // `evidence` はサーバーの応答なので、配列でないものが届いても描画を落とさない（空白だけの行は出さない）
-    notes: (Array.isArray(estimate.evidence) ? estimate.evidence : [])
-      .map((line) => nonEmpty(line))
-      .filter((line) => line !== undefined),
+    notes: { label: ESTIMATE_NOTES_LABEL, lines: evidenceLines(estimate.evidence) },
   };
+}
+
+/**
+ * 根拠の各行。`evidence` はサーバーの応答で、`api.ts` の型ガードは機体の中身まで見ないので、
+ * 配列でないものも、文字列でない要素も、ここで落とす（描画を落とさない）。空白だけの行も出さない
+ */
+function evidenceLines(evidence: unknown): string[] {
+  if (!Array.isArray(evidence)) {
+    return [];
+  }
+  return evidence
+    .filter((line): line is string => typeof line === "string")
+    .map((line) => nonEmpty(line))
+    .filter((line) => line !== undefined);
 }
 
 /** フェーズの表示。表に無い値（上流の応答が想定外でも落とさない）は「—」 */

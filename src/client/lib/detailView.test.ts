@@ -585,7 +585,7 @@ describe("buildDetailView: 「経路」の区分（AC-P2-53・F-05・S-03）", (
   });
 
   it("evidence の各行が根拠として列挙される（S-03「経路推定の根拠を開示する」）", () => {
-    expect(view.sections.at(-1)?.notes).toEqual(EVIDENCE);
+    expect(view.sections.at(-1)?.notes?.lines).toEqual(EVIDENCE);
   });
 
   it("推定の無い機体には「経路」の区分を出さない（既存の 4 区分のまま）", () => {

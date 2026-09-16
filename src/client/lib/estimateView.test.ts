@@ -6,6 +6,7 @@ import { finiteOrUndefined } from "./format.ts";
 import {
   AIRPORT_OPS_PENDING_TEXT,
   airportConfigLabel,
+  airportOpsHeaderFor,
   airportOpsText,
   buildAirportOpsHeader,
   buildEstimateBadge,
@@ -13,7 +14,8 @@ import {
   CONFIDENCE_PREFIX,
   ENROUTE_BADGE_TEXT,
   ESTIMATE_BADGE_CLASS,
-  ESTIMATE_BADGE_LABEL_PREFIX,
+  ESTIMATE_BADGE_SR_PREFIX,
+  ESTIMATE_NOTES_LABEL,
   ESTIMATE_SECTION_TITLE,
   RUNWAY_PREFIX,
 } from "./estimateView.ts";
@@ -165,17 +167,27 @@ describe("buildEstimateBadge: 確度は文字でも示す（AC-P2-51）", () => 
 });
 
 describe("buildEstimateBadge: 読み上げ", () => {
+  // .tsx は srPrefix（不可視）と text を並べるだけなので、読み上げられる名前はこの連結になる
+  function accessibleName(badge: { srPrefix: string; text: string } | undefined) {
+    return badge === undefined ? undefined : `${badge.srPrefix}${badge.text}`;
+  }
+
   it("アクセシブルネームは「推定」で始まり、見える文字をそのまま含む", () => {
     const badge = badgeOf(
       makeFlight({ phase: "departure", airport: HND, runway: "16L", confidence: 0.6, evidence: [] }),
     );
-    expect(badge?.label).toBe(`${ESTIMATE_BADGE_LABEL_PREFIX} HND RWY16L 出発 確度:中`);
+    expect(badge?.srPrefix).toBe(ESTIMATE_BADGE_SR_PREFIX);
+    expect(accessibleName(badge)).toBe("推定 HND RWY16L 出発 確度:中");
   });
 
   it("通過のバッジにも「推定」を添える", () => {
-    expect(badgeOf(makeFlight({ phase: "enroute", confidence: 0.5, evidence: [] }, CRUISE_11000M_FT))?.label).toBe(
-      `${ESTIMATE_BADGE_LABEL_PREFIX} 通過（巡航 11,000m）`,
-    );
+    expect(
+      accessibleName(badgeOf(makeFlight({ phase: "enroute", confidence: 0.5, evidence: [] }, CRUISE_11000M_FT))),
+    ).toBe("推定 通過（巡航 11,000m）");
+  });
+
+  it("接頭辞は区切りの空白まで含む（.tsx で足し直さない）", () => {
+    expect(ESTIMATE_BADGE_SR_PREFIX).toBe("推定 ");
   });
 });
 
@@ -230,6 +242,22 @@ describe("ヘッダーの運用方向（AC-P2-52）", () => {
     expect(airportOpsText("RJTT", [ops("RJTT", "南風運用")])).toBe("羽田: 南風運用");
     expect(airportOpsText("RJBB", [ops("RJBB", "南風運用")])).toBe("RJBB: 南風運用");
   });
+
+  describe("airportOpsHeaderFor: 出す画面", () => {
+    // 「常時表示する」は S-02（メイン画面）の箇条書き。セットアップ画面（S-01）の項目には無く、
+    // その間は取得も止まる（listView の nearbyParamsFor）ので「判定中」とも出さない
+    it("メイン画面では常に出す（未判定の空港は「判定中」）", () => {
+      expect(airportOpsHeaderFor("main", [ops("RJTT", "南風運用")])).toBe("羽田: 南風運用 / 成田: 判定中");
+      expect(airportOpsHeaderFor("main", undefined)).toBe(buildAirportOpsHeader(undefined));
+    });
+
+    it.each([[undefined], [[ops("RJTT", "南風運用")]]])(
+      "セットアップ画面では出さない（集計 %s があっても undefined）",
+      (airportOps) => {
+        expect(airportOpsHeaderFor("setup", airportOps)).toBeUndefined();
+      },
+    );
+  });
 });
 
 describe("airportConfigLabel: 空港の運用方向", () => {
@@ -278,12 +306,30 @@ describe("buildEstimateSection: 詳細の「経路」（AC-P2-53・S-03）", () 
 
   it("evidence の各行が根拠として列挙される（S-03「経路推定の根拠を開示する」）", () => {
     const section = buildEstimateSection({ phase: "arrival", airport: HND, runway: "22", confidence: 0.9, evidence: EVIDENCE }, OPS);
-    expect(section?.notes).toEqual(EVIDENCE);
+    expect(section?.notes).toEqual({ label: ESTIMATE_NOTES_LABEL, lines: EVIDENCE });
+  });
+
+  it("根拠には「根拠」という見出しが付く（画面にも読み上げにも出す）", () => {
+    expect(ESTIMATE_NOTES_LABEL).toBe("根拠");
   });
 
   it("evidence が空なら根拠は空（区分は出す）", () => {
     const section = buildEstimateSection({ phase: "enroute", confidence: 0.5, evidence: [] });
-    expect(section?.notes).toEqual([]);
+    expect(section?.notes.lines).toEqual([]);
+  });
+
+  it("evidence が配列でない・文字列でない要素が混ざっていても落とさない（api.ts の型ガードは機体の中身を見ない）", () => {
+    const withJunk = {
+      phase: "arrival",
+      airport: HND,
+      runway: "22",
+      confidence: 0.9,
+      evidence: ["方位のズレ 0.3°", 42, null, " ", { text: "降下中" }],
+    } as unknown as Flight["estimate"];
+    expect(buildEstimateSection(withJunk, OPS)?.notes.lines).toEqual(["方位のズレ 0.3°"]);
+
+    const notArray = { phase: "enroute", confidence: 0.5, evidence: "方位のズレ 0.3°" } as unknown as Flight["estimate"];
+    expect(buildEstimateSection(notArray)?.notes.lines).toEqual([]);
   });
 
   it("推定が無い機体では区分ごと出さない", () => {

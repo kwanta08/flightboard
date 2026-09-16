@@ -99,11 +99,14 @@ export const DETAIL_ITEM_LABELS = {
 
 export type DetailItem = { label: string; value: string };
 
+/** 区分に添える補足の一覧（見出しと行）。「経路」の区分では「根拠」と `estimate.evidence` の各行 */
+export type DetailNotes = { label: string; lines: string[] };
+
 export type DetailSection = {
   title: string;
   items: DetailItem[];
   /** 項目名の無い補足の行（「経路」の区分では `estimate.evidence` の各行）。無ければ省く */
-  notes?: string[];
+  notes?: DetailNotes;
 };
 
 export type DetailPhoto = {

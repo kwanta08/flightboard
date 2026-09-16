@@ -529,9 +529,16 @@ body {
   color: #5c6370;
 }
 
+/* 根拠の見出し（S-03）。区分の見出し（h3）より小さく、根拠の行に寄せる */
+.detail-notes-label {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: #5c6370;
+}
+
 /* 「経路」の区分の根拠（S-03）。項目名の無い行なので、箇条書きの記号だけで並べる */
 .detail-notes {
-  margin: 0.25rem 0 0;
+  margin: 0.125rem 0 0;
   padding-left: 1.25rem;
   font-size: 0.75rem;
   color: #5c6370;
