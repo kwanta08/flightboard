@@ -271,7 +271,8 @@ function buildRoute(route: NonNullable<Flight["route"]>, current: LatLon): Detai
 
 /**
  * 詳細パネルに出す内容（F-05 の区分。値の無い項目は「—」）。
- * `airportOps` は「経路」の区分の「運用方向」に使う（無ければその項目は「—」）。
+ * `airportOps` は「経路」の区分の「運用方向」に使う（空港は決まったが運用方向が決まらないときは
+ * ヘッダーと同じ「判定中」、空港そのものが決まらないときは「—」。`estimateView.ts`）。
  * `units` は高度・対地速度の表示の単位（省くと既定の m・km/h。AC-P2-72）。
  * 昇降率は m/分（仕様 Q15）、距離は km で、どちらも単位の切り替えの対象外
  */

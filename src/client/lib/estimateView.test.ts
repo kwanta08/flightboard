@@ -373,9 +373,21 @@ describe("buildEstimateSection: 詳細の「経路」（AC-P2-53・S-03）", () 
     expect(section?.items.map((item) => item.label)).not.toContain("一致度");
   });
 
-  it("運用方向は推定した空港の集計から引く（集計に無ければ「—」）", () => {
-    expect(itemsOf({ phase: "arrival", airport: NRT, runway: "34L", confidence: 0.9, evidence: [] }, OPS).get("運用方向")).toBe("—");
-    expect(itemsOf({ phase: "arrival", airport: HND, runway: "22", confidence: 0.9, evidence: [] }).get("運用方向")).toBe("—");
+  // W9 MINOR-4: 「空港は決まったが運用方向がまだ決まらない」という同じ状態を、
+  // ヘッダー（「羽田: 判定中」）と詳細で別の文言（「—」）にしない
+  it("運用方向は推定した空港の集計から引く（集計に無ければヘッダーと同じ「判定中」）", () => {
+    expect(itemsOf({ phase: "arrival", airport: NRT, runway: "34L", confidence: 0.9, evidence: [] }, OPS).get("運用方向")).toBe(
+      AIRPORT_OPS_PENDING_TEXT,
+    );
+    expect(itemsOf({ phase: "arrival", airport: HND, runway: "22", confidence: 0.9, evidence: [] }).get("運用方向")).toBe(
+      AIRPORT_OPS_PENDING_TEXT,
+    );
+    expect(AIRPORT_OPS_PENDING_TEXT).toBe("判定中");
+  });
+
+  it("空港が決まっていなければ運用方向は「—」（判定の対象が無いので「判定中」とは言わない）", () => {
+    expect(itemsOf({ phase: "enroute", confidence: 0.5, evidence: [] }, OPS).get("運用方向")).toBe("—");
+    expect(itemsOf({ phase: "unknown", confidence: 0.3, evidence: [] }, OPS).get("運用方向")).toBe("—");
   });
 
   it("滑走路が決まらない進入では滑走路と確度が「—」", () => {

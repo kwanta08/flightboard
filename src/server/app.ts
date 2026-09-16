@@ -69,7 +69,10 @@ export type AppOptions = {
   /**
    * 運用方向の集計と空港中心の取得（`airportOpsSource.ts`）。あれば位置をキャッシュミスで取得するたびに
    * 取得した全機体を `record` し、`/api/nearby` の処理中に `refresh()`（応答は待たせない）と `current()` を呼ぶ。
-   * 無ければ `/api/nearby` の `airportOps` は常に空配列。`cache` と同時に指定すると `createApp` が `TypeError` を投げる
+   * 無ければ `/api/nearby` の `airportOps` は常に空配列。`cache` と同時に指定すると `createApp` が `TypeError` を投げる。
+   *
+   * **`enrichment` と併せて使うときは、`createAirportOpsSource` にも同じ `getRoute` を渡すこと**
+   * （渡さないと集計だけが route を見ない推定になり、同じ応答の `flights[].estimate` と食い違う。W9 MAJOR-2）
    */
   airportOps?: AppAirportOps;
   /**
@@ -244,7 +247,9 @@ export function createApp(options: AppOptions): Hono {
             }
           }
           if (airportOps !== undefined) {
-            // 観測取得の機体も運用方向の集計に流す（絞り込み前の全機体。plan の「運用方向の集計の設計」）
+            // 観測取得の機体も運用方向の集計に流す（絞り込み前の全機体。plan の「運用方向の集計の設計」）。
+            // ルート（adsbdb）は `airportOps` 側が同じ `getRoute` で付ける（`composeApp` の配線。W9 MAJOR-2）ので、
+            // ここでは付けない（同じ機体に二度引かない）
             try {
               airportOps.record(value.flights, value.fetchedAt);
             } catch (error) {

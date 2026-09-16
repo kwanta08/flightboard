@@ -61,8 +61,12 @@ export function composeApp(options: ComposeAppOptions = {}): Hono {
   // 機体写真は planespotters（撮影者名とリンクが取れる提供元。仕様 §13）
   const photos = createPhotoSource({ fetch: fetchImpl, now });
   const tracks = createTrackStore({ now });
-  // 空港中心の取得は観測点と同じ提供元インスタンスを共有する（429 の休止状態を共有し、無駄撃ちしない）
+  // 空港中心の取得は観測点と同じ提供元インスタンスを共有する（429 の休止状態を共有し、無駄撃ちしない）。
+  // ルートの引き方も `createApp` に渡すのと同じ `enrichment` にする（集計の推定を各行の estimate と同じ入力で
+  // 組み立てる。キャッシュを引くだけで adsbdb への照会は増やさない。W9 MAJOR-2）
   const airportOps =
-    options.airportOps === false ? undefined : createAirportOpsSource({ positions, now, tracks });
+    options.airportOps === false
+      ? undefined
+      : createAirportOpsSource({ positions, now, tracks, getRoute: (callsign) => enrichment.getRoute(callsign) });
   return createApp({ positions, enrichment, photos, tracks, airportOps, now, staticRoot });
 }

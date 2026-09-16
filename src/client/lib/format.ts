@@ -1,5 +1,6 @@
 // 一覧・詳細で使う表示用の文字列（AC-B4・AC-B13）。高度と対地速度は設定の単位で出す（F-09・AC-P2-72）。
 // 値が無い（null / undefined）・非有限（NaN・±Infinity）なら DASH を返す。
+import { VERTICAL_RATE_THRESHOLD_FPM } from "../../shared/estimate.ts";
 import { bearingToJa16, FT_TO_M } from "../../shared/geo.ts";
 import type { Airport } from "../../shared/types.ts";
 
@@ -31,9 +32,6 @@ const SPEED_UNIT_SUFFIX: Readonly<Record<SpeedUnit, string>> = { kmh: "km/h", kt
  * 10ft ≒ 3m なので、ft に切り替えても m 表示（10m 刻み）より粗くはならない（単位を変えて情報が減らない）
  */
 const ALTITUDE_ROUND_STEP = 10;
-
-/** 上昇／下降／水平の境界（fpm）。§10.2 のフェーズ判定と同じ値 */
-export const VERTICAL_TREND_THRESHOLD_FPM = 200;
 
 /**
  * 仰角をこの値（度）未満なら小数 1 桁、以上なら整数で表示する。
@@ -77,16 +75,16 @@ function altitudeText(value: number, unit: AltitudeUnit): string {
 }
 
 /**
- * 高度（m）を表示の単位で。10 単位に丸めて桁区切り（例 2011.68 → "2,010m"、単位が ft なら "6,600ft"）。
- * 単位を省くと既定の m（AC-P2-72）。
- * **元が ft の値（ADS-B の高度）はこれに渡さず `formatAltitudeFt` を使う**。
- * ft → m → ft の往復では 25ft 刻みの受信値（例 875ft）が 10ft の丸めの境界で逆向きに丸まり、表示が食い違う
+ * 高度（m）を **m のまま**。10m 単位に丸めて桁区切り（例 2011.68 → "2,010m"）。
+ * **単位は取らない**（W9 MINOR-5）。m → ft の換算口をここに残すと、ft → m → ft の往復で
+ * 25ft 刻みの受信値（例 875ft）が 10ft の丸めの境界で逆向きに丸まり、表示が食い違う。
+ * 元が ft の値（ADS-B の高度）は `formatAltitudeFt` に渡すこと（単位の切り替えもそちらが持つ）
  */
-export function formatAltitudeM(meters: MaybeNumber, unit: AltitudeUnit = DEFAULT_UNITS.altitude): string {
+export function formatAltitudeM(meters: MaybeNumber): string {
   if (!isFiniteNumber(meters)) {
     return DASH;
   }
-  return altitudeText(unit === "ft" ? meters / FT_TO_M : meters, unit);
+  return altitudeText(meters, "m");
 }
 
 /**
@@ -97,7 +95,7 @@ export function formatAltitudeFt(feet: MaybeNumber, unit: AltitudeUnit = DEFAULT
   if (!isFiniteNumber(feet)) {
     return DASH;
   }
-  return unit === "ft" ? altitudeText(feet, "ft") : formatAltitudeM(feet * FT_TO_M, "m");
+  return unit === "ft" ? altitudeText(feet, "ft") : formatAltitudeM(feet * FT_TO_M);
 }
 
 /** 対地速度（kt）を表示の単位の整数で（例 250kt → "463km/h"、単位が kt なら "250kt"）。単位を省くと既定の km/h */
@@ -135,15 +133,18 @@ export function formatVerticalRateFpm(fpm: MaybeNumber): string {
 
 export type VerticalTrend = "climb" | "descend" | "level";
 
-/** 昇降の区分。> +200 は climb、< −200 は descend、その間（±200 ちょうどを含む）は level。値が無ければ undefined */
+/**
+ * 昇降の区分。> +200 は climb、< −200 は descend、その間（±200 ちょうどを含む）は level。値が無ければ undefined。
+ * しきい値はサーバーのフェーズ判定と同じ 1 か所（`src/shared/estimate.ts`）から読む
+ */
 export function verticalTrend(fpm: MaybeNumber): VerticalTrend | undefined {
   if (!isFiniteNumber(fpm)) {
     return undefined;
   }
-  if (fpm > VERTICAL_TREND_THRESHOLD_FPM) {
+  if (fpm > VERTICAL_RATE_THRESHOLD_FPM) {
     return "climb";
   }
-  if (fpm < -VERTICAL_TREND_THRESHOLD_FPM) {
+  if (fpm < -VERTICAL_RATE_THRESHOLD_FPM) {
     return "descend";
   }
   return "level";

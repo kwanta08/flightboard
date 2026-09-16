@@ -643,9 +643,10 @@ describe("buildDetailView: 「経路」の区分（AC-P2-53・F-05・S-03）", (
     expect(plain.sections.map((section) => section.title)).toEqual(["フライト", "機体", "飛行状態", "自分との関係"]);
   });
 
-  it("運用方向の集計を渡さなければ「—」（他の項目は出す）", () => {
+  // W9 MINOR-4: 空港は決まっているので、ヘッダーと同じ「判定中」（同じ状態を別の文言にしない）
+  it("運用方向の集計を渡さなければ「判定中」（他の項目は出す）", () => {
     const withoutOps = buildDetailView(makeDetail(ESTIMATED_FLIGHT), NAGAREYAMA);
-    expect(valueOf(withoutOps, "経路", "運用方向")).toBe("—");
+    expect(valueOf(withoutOps, "経路", "運用方向")).toBe("判定中");
     expect(valueOf(withoutOps, "経路", "滑走路")).toBe("RWY22");
   });
 });

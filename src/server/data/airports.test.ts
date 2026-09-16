@@ -2,6 +2,7 @@
 // 滑走路端との突き合わせ（対応表の滑走路が実在するか・中心座標が端の近くにあるか）は
 // src/server/data/runways.test.ts にある。ここでは引き方の規則だけを固める。
 import { describe, expect, it } from "vitest";
+import { AIRPORT_DISPLAY_NAMES } from "../../shared/airports.ts";
 import {
   MAGNETIC_VARIATION_DEG,
   RUNWAY_CONFIGS,
@@ -35,6 +36,18 @@ describe("targetAirport", () => {
   it("TARGET_AIRPORT_ICAOS は表の並び順の ICAO", () => {
     expect(TARGET_AIRPORT_ICAOS).toEqual(["RJTT", "RJAA"]);
     expect(TARGET_AIRPORT_ICAOS).toEqual(TARGET_AIRPORTS.map((airport) => airport.icao));
+  });
+});
+
+/**
+ * 「対象空港」はここ（中心座標・運用方向の対応表）と `src/shared/airports.ts`（表示名）の 2 か所にある。
+ * 片方にだけ足すと壊れ方が分かりにくい（W9 MINOR-1）:
+ * - ここだけに足す → サーバーは集計するのに、ヘッダー（`AIRPORT_DISPLAY_NAMES` の並びで作る）に出ない
+ * - shared だけに足す → ヘッダーには出るが、集計も推定も対象にしないので永遠に「判定中」
+ */
+describe("対象空港の一覧（server と shared で同じ集合）", () => {
+  it("TARGET_AIRPORT_ICAOS と AIRPORT_DISPLAY_NAMES のキーが一致する", () => {
+    expect([...TARGET_AIRPORT_ICAOS].sort()).toEqual(Object.keys(AIRPORT_DISPLAY_NAMES).sort());
   });
 });
 

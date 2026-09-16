@@ -5,6 +5,8 @@
 // こうすると停止処理・`unref` が要らず、`server.ts` の `close()` も変えずに済む。
 // 位置の取得元は composeApp が作ったフォールバック提供元と**同じインスタンス**を共有する（429 の休止も共有する）。
 import type { AirportOps, Flight } from "../shared/types.ts";
+import type { RouteInfo } from "./adsbdb/enrichment.ts";
+import { attachRoutes } from "./app.ts";
 import type { AppTracks } from "./app.ts";
 import { TARGET_AIRPORTS } from "./data/airports.ts";
 import type { TargetAirport } from "./data/airports.ts";
@@ -53,6 +55,16 @@ export type AirportOpsSourceOptions = {
    * これで観測半径の外にいる機体でも `/api/flights/:hex` が引ける。例外はログに出して握りつぶす
    */
   tracks?: AppTracks;
+  /**
+   * キャッシュ済みのルート（adsbdb）の引き方。**`/api/nearby` の各行に使うのと同じものを渡すこと**
+   * （`composeApp` は `createApp` に渡すのと同じ `enrichment.getRoute` を渡す）。
+   * 集計の推定を各行の `estimate` と同じ入力で組み立てるために要る。渡さないと route を見ない推定になり、
+   * AC-P2-16（幾何が裏を取れないときは滑走路を決めない）が集計側だけ効かなくなる（W9 MAJOR-2）。
+   *
+   * **キャッシュにあるものだけを使う**（`enqueueRoutes` は呼ばない＝ adsbdb への照会を増やさない）。
+   * 空港取得で見つけた機体はキャッシュに無いことが多く、そのときは従来どおり幾何だけで推定する
+   */
+  getRoute?: (callsign: string) => RouteInfo | undefined;
 };
 
 export interface AirportOpsSource {
@@ -60,7 +72,8 @@ export interface AirportOpsSource {
   current(): AirportOps[];
   /**
    * 取得した機体を集計に流す（観測取得・空港取得のどちらも通る）。
-   * 旅客機・貨物機で `seenPosSec ≤ 60` のものだけを見て、滑走路まで決まった進入・出発を 1 hex 1 件で記録する
+   * 旅客機・貨物機で `seenPosSec ≤ 60` のものだけを見て、滑走路まで決まった進入・出発を 1 hex 1 件で記録する。
+   * 推定を組み立てる前に、`getRoute`（あれば）でキャッシュ済みのルートを付ける（`/api/nearby` の各行と同じ入力にする）
    */
   record(flights: readonly Flight[], fetchedAt: number): void;
   /**
@@ -71,7 +84,7 @@ export interface AirportOpsSource {
 }
 
 export function createAirportOpsSource(options: AirportOpsSourceOptions): AirportOpsSource {
-  const { positions, now, tracks } = options;
+  const { positions, now, tracks, getRoute } = options;
   const airports = options.airports ?? TARGET_AIRPORTS;
   const ends = options.ends ?? RUNWAY_ENDS;
   const ttlMs = options.ttlMs ?? DEFAULT_AIRPORT_FETCH_TTL_MS;
@@ -102,7 +115,7 @@ export function createAirportOpsSource(options: AirportOpsSourceOptions): Airpor
       if (flight.kind !== "passenger" && flight.kind !== "cargo") continue;
       // 比較を否定形で書き、NaN も除外する（60 秒超の古い位置を集計に入れない）
       if (!(flight.seenPosSec <= MAX_SEEN_POS_SEC)) continue;
-      const entry = toEntry(flight, fetchedAt);
+      const entry = toEntry(withCachedRoute(flight), fetchedAt);
       if (entry === undefined) continue;
       // 古い取得の結果で新しい記録を上書きしない
       const previous = entries.get(entry.hex);
@@ -113,13 +126,22 @@ export function createAirportOpsSource(options: AirportOpsSourceOptions): Airpor
   }
 
   /**
+   * キャッシュ済みのルートを付けた機体（`getRoute` が無ければ入力のまま）。入力の機体は書き換えない。
+   * `/api/nearby` の各行と同じ `attachRoutes` を通すので、「どの機体にルートを付けるか」の規則が 2 つに割れない。
+   * キューには積まない（adsbdb への照会は増やさない）ので、`missingCallsigns` は捨てる
+   */
+  function withCachedRoute(flight: Flight): Flight {
+    return getRoute === undefined ? flight : attachRoutes([flight], getRoute).flights[0]!;
+  }
+
+  /**
    * 滑走路まで決まった進入・出発なら記録にする。それ以外（滑走路なし・通過・不明）は集計に使わない。
    *
-   * ここへ渡る機体は `attachRoutes` の**前**の生の機体なので、**route（adsbdb）の裏付けは使わない**
-   * （幾何が滑走路を決めた機体だけを数える）。そのため `/api/nearby` の各行の `estimate`（route 付きで組み立てる）と
-   * 食い違うことがある: route が「羽田発」と言う機体は、行では AC-P2-16 により「出発・滑走路なし」と出るが、
-   * ここでは幾何どおり「着陸 RWY22」として数えられる。
-   * plan の指定（`selectFlights` の前の全機体を流す＝観測半径の外の機体も数える）どおりの挙動。
+   * 推定は `/api/nearby` の各行と**同じ入力**（キャッシュ済みの route 付き）で組み立てる。
+   * こうしないと AC-P2-16 が集計側だけ効かず、route が「羽田発」と言う機体が、行では「出発・滑走路なし」なのに
+   * 集計では「着陸 RWY22」として数えられる（W9 MAJOR-2）。
+   * route がキャッシュに無い機体（空港取得で見つけた機体に多い）は、従来どおり幾何だけで決まる。
+   * 流し込む範囲は plan の指定どおり（`selectFlights` の前の全機体＝観測半径の外の機体も数える）。
    */
   function toEntry(flight: Flight, at: number): AirportOpsEntry | undefined {
     const estimate = buildEstimate(flight, ends, airports);

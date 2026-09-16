@@ -78,7 +78,9 @@ describe("表示の単位（F-09・仕様 Q6・AC-P2-72）", () => {
     expect(DEFAULT_UNITS).toEqual({ altitude: "m", speed: "kmh" });
   });
 
-  describe("formatAltitudeM / formatAltitudeFt: 単位 ft（10 単位に丸めて桁区切り。m と同じ流儀）", () => {
+  // W9 MINOR-5: m → ft の換算口（`formatAltitudeM` の単位指定）は無くしたので、
+  // ft 表示の入口は受信値（ft）を受ける `formatAltitudeFt` だけ。`formatAltitudeM` は m 専用
+  describe("formatAltitudeFt: 単位 ft（10 単位に丸めて桁区切り。m と同じ流儀）", () => {
     it.each([
       [6600, "6,600ft"],
       [21654, "21,650ft"], // 10ft 単位に丸める
@@ -90,16 +92,13 @@ describe("表示の単位（F-09・仕様 Q6・AC-P2-72）", () => {
     });
 
     it.each([
-      [2011.68, "6,600ft"], // 2011.68 / 0.3048 = 6600
-      [914.4, "3,000ft"],
-      [10999.9272, "36,090ft"], // 巡航 11,000m ≒ 36,089ft → 36,090
-      [0, "0ft"],
-    ])("%s m → %s", (meters, expected) => {
-      expect(formatAltitudeM(meters, "ft")).toBe(expected);
+      [36089, "36,090ft"], // 巡航 11,000m ≒ 36,089ft → 36,090
+      [875, "880ft"], // 25ft 刻みの受信値も m へ往復させずそのまま丸める
+    ])("受信値 %s ft はそのまま丸めて %s", (feet, expected) => {
+      expect(formatAltitudeFt(feet, "ft")).toBe(expected);
     });
 
     it("単位を省くと既定の m（明示した m と同じ）", () => {
-      expect(formatAltitudeM(2011.68)).toBe(formatAltitudeM(2011.68, "m"));
       expect(formatAltitudeM(2011.68)).toBe("2,010m");
       expect(formatAltitudeFt(6600)).toBe(formatAltitudeFt(6600, "m"));
       expect(formatAltitudeFt(6600)).toBe("2,010m");
@@ -107,7 +106,8 @@ describe("表示の単位（F-09・仕様 Q6・AC-P2-72）", () => {
 
     it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY])("値が無ければ単位に関わらず「—」（%s）", (value) => {
       expect(formatAltitudeFt(value, "ft")).toBe("—");
-      expect(formatAltitudeM(value, "ft")).toBe("—");
+      expect(formatAltitudeFt(value)).toBe("—");
+      expect(formatAltitudeM(value)).toBe("—");
     });
 
     it("-0 に丸まる負の小さな値は「0ft」（-4ft）", () => {

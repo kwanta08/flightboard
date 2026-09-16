@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type LatLon, destinationPoint } from "../shared/geo.ts";
 import type { Flight } from "../shared/types.ts";
+import type { RouteInfo } from "./adsbdb/enrichment.ts";
 import { AIRPORT_FETCH_RADIUS_NM, DEFAULT_AIRPORT_FETCH_TTL_MS, createAirportOpsSource } from "./airportOpsSource.ts";
 import { TARGET_AIRPORTS } from "./data/airports.ts";
 import type { RunwayEnd } from "./data/importRunways.ts";
@@ -97,13 +98,24 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-type SetupOptions = { positions?: ReturnType<typeof fakePositions>; tracks?: ReturnType<typeof fakeTracks> };
+type SetupOptions = {
+  positions?: ReturnType<typeof fakePositions>;
+  tracks?: ReturnType<typeof fakeTracks>;
+  /** キャッシュ済みのルートの引き方（`composeApp` は `createApp` と同じ `enrichment.getRoute` を渡す） */
+  getRoute?: (callsign: string) => RouteInfo | undefined;
+};
 
 function setup(options: SetupOptions = {}) {
   let time = T0;
   const positions = options.positions ?? fakePositions();
   const tracks = options.tracks;
-  const source = createAirportOpsSource({ positions, now: () => time, ...(tracks === undefined ? {} : { tracks }) });
+  const { getRoute } = options;
+  const source = createAirportOpsSource({
+    positions,
+    now: () => time,
+    ...(tracks === undefined ? {} : { tracks }),
+    ...(getRoute === undefined ? {} : { getRoute }),
+  });
   return {
     source,
     positions,
@@ -355,5 +367,74 @@ describe("createAirportOpsSource: 取得の失敗（AC-P2-62）", () => {
     t.source.refresh();
     await flush();
     expect(t.positions.queries).toHaveLength(3);
+  });
+});
+
+/**
+ * W9 MAJOR-2: 集計の推定を `/api/nearby` の各行の `estimate` と同じ入力（キャッシュ済みの adsbdb ルート込み）で
+ * 組み立てる。`getRoute` を渡さなければ従来どおり幾何だけで決まる。
+ * 機体は `arrivingFlight`（コールサイン ANA245・幾何では RJTT 22 へ進入）を使う
+ */
+describe("createAirportOpsSource: 集計の推定に route を効かせる", () => {
+  const HND = { icao: "RJTT", name: "Tokyo Haneda International Airport" };
+  const FUK = { icao: "RJFF", name: "Fukuoka Airport" };
+  /** 「羽田発」（幾何の「22 へ進入」と食い違う） */
+  const DEPARTS_HANEDA: RouteInfo = { route: { origin: HND, destination: FUK, source: "adsbdb" } };
+  /** 「羽田着」（幾何と一致する） */
+  const ARRIVES_HANEDA: RouteInfo = { route: { origin: FUK, destination: HND, source: "adsbdb" } };
+
+  function lookup(routes: Record<string, RouteInfo>) {
+    const calls: string[] = [];
+    return { calls, getRoute: (callsign: string): RouteInfo | undefined => (calls.push(callsign), routes[callsign]) };
+  }
+
+  it("route が幾何と食い違う機体は集計に入れない（行の estimate と同じ AC-P2-16 の規則）", () => {
+    const { calls, getRoute } = lookup({ ANA245: DEPARTS_HANEDA });
+    const t = setup({ getRoute });
+
+    t.source.record([arrivingFlight("aaa111", endOf("RJTT", "22"))], T0);
+
+    expect(calls).toEqual(["ANA245"]);
+    expect(t.source.current()).toEqual([]);
+  });
+
+  it("route が幾何と一致すれば従来どおり数える", () => {
+    const { getRoute } = lookup({ ANA245: ARRIVES_HANEDA });
+    const t = setup({ getRoute });
+
+    t.source.record([arrivingFlight("aaa111", endOf("RJTT", "22"))], T0);
+
+    expect(t.source.current().map((ops) => [ops.icao, ops.landingRunways, ops.basedOn])).toEqual([["RJTT", ["22"], 1]]);
+  });
+
+  it("キャッシュに無いコールサインは従来どおり幾何だけで決まる（照会は増やさない）", () => {
+    const { calls, getRoute } = lookup({});
+    const t = setup({ getRoute });
+
+    t.source.record([arrivingFlight("aaa111", endOf("RJTT", "22"))], T0);
+
+    expect(calls).toEqual(["ANA245"]);
+    expect(t.source.current()).toHaveLength(1);
+  });
+
+  it("getRoute を渡さなければ route を見ない（既定の挙動は変えない）", () => {
+    const t = setup();
+    t.source.record([arrivingFlight("aaa111", endOf("RJTT", "22"))], T0);
+    expect(t.source.current()).toHaveLength(1);
+  });
+
+  it("空港中心の取得で得た機体にも同じ規則を掛ける", async () => {
+    const { getRoute } = lookup({ ANA245: DEPARTS_HANEDA });
+    const positions = fakePositions(async (q) => ({
+      flights: q.lat === HANEDA.lat ? [arrivingFlight("aaa111", endOf("RJTT", "22"))] : [],
+      source: "adsblol",
+    }));
+    const t = setup({ positions, getRoute });
+
+    t.source.refresh();
+    await flush();
+
+    expect(t.positions.queries).toHaveLength(1);
+    expect(t.source.current()).toEqual([]);
   });
 });

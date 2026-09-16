@@ -176,7 +176,7 @@ describe("生成規則: 進入・出発だが滑走路が決まらない", () =>
   it("route の裏付けがあれば confidence 0.5", () => {
     const estimate = buildEstimate(flight({ ...far, route: { origin: "RJOO", destination: "RJTT" } }));
     expect(estimate?.confidence).toBe(0.5);
-    expect(estimate?.evidence).toEqual(["羽田まで 40.0km", "降下中 -704fpm", "adsbdb: RJTT 着"]);
+    expect(estimate?.evidence).toEqual(["羽田まで 40.0km", "降下中 -704fpm", "adsbdb: 羽田 着"]);
   });
 });
 
@@ -190,8 +190,11 @@ describe("生成規則: 通過（enroute）", () => {
     expect(estimate?.confidence).toBe(0.5);
   });
 
-  it("evidence は巡航高度と水平飛行", () => {
-    expect(estimate?.evidence).toEqual(["巡航 35000ft", "水平飛行 0fpm"]);
+  // 高度は evidence に入れない（W9 全体差分レビュー MAJOR-1）。
+  // 同じ詳細パネルのバッジ「通過（巡航 10,670m）」・飛行状態「GNSS 高度 10,670m」が設定の単位（F-09・Q19）で
+  // 出す同じ高度と食い違うため。通過の根拠は水平飛行だけにする
+  it("evidence は水平飛行だけ（高度は入れない）", () => {
+    expect(estimate?.evidence).toEqual(["水平飛行 0fpm"]);
   });
 });
 
@@ -287,7 +290,7 @@ describe("AC-P2-16: 幾何が裏を取れなければ滑走路を付けない", 
     expect(estimate?.phase).toBe("departure");
     expect(estimate?.runway).toBeUndefined();
     expect(estimate?.confidence).toBe(0.3); // 0.5 − 0.2（AC-P2-14 の減点）
-    expect(estimate?.evidence).toContain("adsbdb: RJAA 発");
+    expect(estimate?.evidence).toContain("adsbdb: 成田 発");
     expect(estimate?.evidence).toContain("幾何判定は 進入");
   });
 });
@@ -360,7 +363,7 @@ describe("AC-P2-14: route の裏付け", () => {
     expect(estimate?.phase).toBe("departure");
     expect(estimate?.airport).toEqual({ icao: "RJTT", name: "羽田" });
     expect(estimate?.confidence).toBe(0.5);
-    expect(estimate?.evidence).toContain("adsbdb: RJTT 発");
+    expect(estimate?.evidence).toContain("adsbdb: 羽田 発");
   });
 
   it("route.destination が対象空港なら進入を第一候補にする", () => {
@@ -368,7 +371,7 @@ describe("AC-P2-14: route の裏付け", () => {
       flight({ ...towardAirport(HANEDA, { fromBearing: 45, distanceKm: 20 }), verticalRateFpm: 0, route: { origin: "RJOO", destination: "RJTT" } }),
     );
     expect(estimate?.phase).toBe("arrival");
-    expect(estimate?.evidence).toContain("adsbdb: RJTT 着");
+    expect(estimate?.evidence).toContain("adsbdb: 羽田 着");
   });
 
   it("滑走路の候補探索も route 由来の phase の条件で行う", () => {
@@ -381,7 +384,7 @@ describe("AC-P2-14: route の裏付け", () => {
     expect(estimate?.phase).toBe("departure");
     expect(estimate?.runway).toBeUndefined();
     expect(estimate?.confidence).toBe(0.3);
-    expect(estimate?.evidence).toContain("adsbdb: RJTT 発");
+    expect(estimate?.evidence).toContain("adsbdb: 羽田 発");
     expect(estimate?.evidence).toContain("幾何判定は 進入");
   });
 
@@ -391,7 +394,7 @@ describe("AC-P2-14: route の裏付け", () => {
     );
     expect(estimate?.phase).toBe("arrival");
     expect(estimate?.confidence).toBe(0.3);
-    expect(estimate?.evidence).not.toContain("adsbdb: RJOO 発");
+    expect(estimate?.evidence.some((line) => line.startsWith("adsbdb:"))).toBe(false);
   });
 
   it("出発地も到着地も対象空港なら、幾何判定と一致する方を採る", () => {
@@ -399,7 +402,7 @@ describe("AC-P2-14: route の裏付け", () => {
       flight({ ...departing(endOf("RJTT", "16L"), { distanceKm: 8 }), altitudeBaroFt: 2500, verticalRateFpm: 1500, route: { origin: "RJTT", destination: "RJAA" } }),
     );
     expect(estimate?.phase).toBe("departure");
-    expect(estimate?.evidence).toContain("adsbdb: RJTT 発");
+    expect(estimate?.evidence).toContain("adsbdb: 羽田 発");
     expect(estimate?.evidence).not.toContain("幾何判定は 出発");
   });
 });
@@ -412,7 +415,7 @@ describe("AC-P2-14: 幾何判定との食い違い（confidence を 0.2 引く�
     );
     expect(estimate?.phase).toBe("departure");
     expect(estimate?.confidence).toBe(0.3);
-    expect(estimate?.evidence).toEqual(["羽田まで 35.9km", "水平飛行 0fpm", "adsbdb: RJTT 発", "幾何判定は 通過"]);
+    expect(estimate?.evidence).toEqual(["羽田まで 35.9km", "水平飛行 0fpm", "adsbdb: 羽田 発", "幾何判定は 通過"]);
   });
 
   it("空港が食い違えば減点する（滑走路が決まっていれば 0.9 → 0.7 で確度は「中」）", () => {
@@ -426,8 +429,8 @@ describe("AC-P2-14: 幾何判定との食い違い（confidence を 0.2 引く�
     expect(estimate?.runway).toBe("22");
     expect(estimate?.confidence).toBe(0.7);
     expect(confidenceLabel(estimate?.confidence ?? 0, true)).toBe("中");
-    expect(estimate?.evidence).toContain("adsbdb: RJAA 着");
-    expect(estimate?.evidence).toContain("幾何判定は RJTT");
+    expect(estimate?.evidence).toContain("adsbdb: 成田 着");
+    expect(estimate?.evidence).toContain("幾何判定は 羽田");
   });
 
   it("幾何が決めきれない（unknown）ときは食い違いに数えない", () => {
@@ -536,11 +539,11 @@ describe("離陸直後の推定（MINOR-2 の回帰）", () => {
   });
 
   it("route が「羽田発」なら食い違いの減点は付かない（0.5 のまま）", () => {
-    // 修正前は幾何が成田を指したため「幾何判定は RJAA」が付き 0.5 → 0.3 に減点されていた
+    // 修正前は幾何が成田を指したため「幾何判定は 成田」が付き 0.5 → 0.3 に減点されていた
     const estimate = buildEstimate(justAirborne(-25, { origin: "RJTT", destination: "RJOO" }));
     expect(estimate?.airport).toEqual({ icao: "RJTT", name: "羽田" });
     expect(estimate?.confidence).toBe(0.5);
-    expect(estimate?.evidence).toEqual(["羽田まで 1.2km", "上昇中 +1500fpm", "adsbdb: RJTT 発"]);
+    expect(estimate?.evidence).toEqual(["羽田まで 1.2km", "上昇中 +1500fpm", "adsbdb: 羽田 発"]);
   });
 });
 

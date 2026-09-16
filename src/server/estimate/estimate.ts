@@ -2,7 +2,7 @@
 // フェーズ判定（phase.ts）と滑走路の採点（runway.ts）を束ね、Flight["estimate"] を作る純粋関数。
 // 入力は単発の Flight だけで、航跡・I/O・グローバル状態は使わない。
 import { airportDisplayName } from "../../shared/airports.ts";
-import { aircraftAltitudeFt, haversineKm } from "../../shared/geo.ts";
+import { haversineKm } from "../../shared/geo.ts";
 import type { Flight } from "../../shared/types.ts";
 import { TARGET_AIRPORTS, type TargetAirport } from "../data/airports.ts";
 import type { RunwayEnd } from "../data/importRunways.ts";
@@ -90,7 +90,7 @@ export function buildEstimate(
   const estimate: Estimate = {
     phase,
     confidence: disagreement ? applyDisagreementPenalty(rawConfidence) : rawConfidence,
-    evidence: buildEvidence({ flight, phase, airport, candidate, route, disagreement }),
+    evidence: buildEvidence({ flight, airport, candidate, route, disagreement }),
   };
   if (airport) {
     estimate.airport = { icao: airport.icao, name: airportName(airport.icao) };
@@ -162,7 +162,10 @@ function routeBacking(
   );
 }
 
-/** route の裏付けと幾何判定の食い違い（AC-P2-14）。食い違わなければ undefined */
+/**
+ * route の裏付けと幾何判定の食い違い（AC-P2-14）。食い違わなければ undefined。
+ * 空港は evidence の他の行（「羽田まで 40.0km」）と同じ呼び名（shortName）で出す（W9 MINOR-3）
+ */
 function describeDisagreement(
   route: RouteBacking | undefined,
   geometry: PhaseResult,
@@ -174,7 +177,8 @@ function describeDisagreement(
   // 幾何が決めきれなかった（unknown）ときは食い違いに数えない
   const phaseDiffers = geometry.phase !== "unknown" && geometry.phase !== route.phase;
   const phaseText = phaseDiffers ? PHASE_LABELS[geometry.phase] : undefined;
-  const airportText = geometryAirport && geometryAirport.icao !== route.airport.icao ? geometryAirport.icao : undefined;
+  const airportText =
+    geometryAirport && geometryAirport.icao !== route.airport.icao ? airportName(geometryAirport.icao) : undefined;
   if (phaseText === undefined && airportText === undefined) {
     return undefined;
   }
@@ -199,16 +203,19 @@ function searchRunway(
   return selectRunway({ position: flight.position, trackDeg, verticalRateFpm, phase }, ends);
 }
 
-/** evidence の各行（AC-P2-54 の書式） */
+/**
+ * evidence の各行（AC-P2-54 の書式）。
+ * **高度は入れない**（通過の「巡航 35000ft」は、同じ詳細パネルの飛行状態・バッジが設定の単位（F-09・Q19）で
+ * 出す同じ高度と食い違うため、W9 の全体差分レビュー MAJOR-1 で削った）。通過の根拠は「水平飛行 0fpm」で足りる
+ */
 function buildEvidence(args: {
   flight: Flight;
-  phase: FlightPhase;
   airport: TargetAirport | undefined;
   candidate: RunwayCandidate | undefined;
   route: RouteBacking | undefined;
   disagreement: string | undefined;
 }): string[] {
-  const { flight, phase, airport, candidate, route, disagreement } = args;
+  const { flight, airport, candidate, route, disagreement } = args;
   const evidence: string[] = [];
 
   if (candidate) {
@@ -216,8 +223,6 @@ function buildEvidence(args: {
     evidence.push(`滑走路まで ${oneDecimal(candidate.distanceKm)}km`);
   } else if (airport) {
     evidence.push(`${airportName(airport.icao)}まで ${oneDecimal(haversineKm(flight.position, airport))}km`);
-  } else if (phase === "enroute") {
-    evidence.push(`巡航 ${Math.round(aircraftAltitudeFt(flight.position) ?? 0)}ft`);
   }
 
   const verticalRateFpm = finiteOrUndefined(flight.verticalRateFpm);
@@ -225,7 +230,8 @@ function buildEvidence(args: {
     evidence.push(verticalRateEvidence(verticalRateFpm));
   }
   if (route) {
-    evidence.push(`adsbdb: ${route.airport.icao} ${route.phase === "departure" ? "発" : "着"}`);
+    // 空港は「羽田」（詳細の「空港」欄・他の evidence の行と同じ呼び名。W9 MINOR-3）
+    evidence.push(`adsbdb: ${airportName(route.airport.icao)} ${route.phase === "departure" ? "発" : "着"}`);
   }
   if (disagreement) {
     evidence.push(disagreement);
@@ -245,7 +251,7 @@ function verticalRateEvidence(fpm: number): string {
   return `水平飛行 ${rounded === 0 ? 0 : rounded}fpm`;
 }
 
-/** 表示用の空港名（「羽田」）。表に無い ICAO はそのまま出す（推測で埋めない） */
+/** 表示用の空港名（「羽田」）。evidence の中はこの呼び名で統一する。表に無い ICAO はそのまま出す（推測で埋めない） */
 function airportName(icao: string): string {
   return airportDisplayName(icao)?.shortName ?? icao;
 }

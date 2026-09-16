@@ -235,8 +235,9 @@ export type EstimateSection = {
  * 詳細パネルの「経路」（AC-P2-53）。推定が無い機体では undefined（区分ごと出さない）。
  * 「運用方向」は推定した空港の集計（`airportOps`）から引く。決まっていない項目は「—」。
  * ここは数値の書式を持たない（`items` に出るのはフェーズ・空港・滑走路・運用方向・確度だけ）。
- * 根拠（`notes.lines`）はサーバーが作った文字列をそのまま並べるので、単位の設定の対象外
- * （enroute の根拠にはサーバーが入れた「巡航 36089ft」が m の設定でもそのまま出る。`src/server/estimate/estimate.ts`）
+ * 根拠（`notes.lines`）はサーバーが作った文字列をそのまま並べる。サーバーは evidence に高度を入れない
+ * （設定の単位で出す他の高度表示と食い違わせないため。`src/server/estimate/estimate.ts`）ので、
+ * 単位の設定に依らない文字列だけが並ぶ
  */
 export function buildEstimateSection(
   estimate: Flight["estimate"],
@@ -253,11 +254,23 @@ export function buildEstimateSection(
       { label: labels.phase, value: phaseText(estimate.phase) },
       { label: labels.airport, value: airportText(estimate.airport) },
       { label: labels.runway, value: runwayText(estimate.runway) ?? DASH },
-      { label: labels.airportConfig, value: airportConfigLabel(estimate.airport?.icao, airportOps) ?? DASH },
+      { label: labels.airportConfig, value: airportConfigText(estimate.airport?.icao, airportOps) },
       { label: labels.confidence, value: confidence ?? DASH },
     ],
     notes: { label: ESTIMATE_NOTES_LABEL, lines: evidenceLines(estimate.evidence) },
   };
+}
+
+/**
+ * 「運用方向」の値。空港が決まっているのに集計がまだ無い・対応表に無いときは、ヘッダーと**同じ文言**で
+ * 「判定中」と出す（W9 MINOR-4。同じ状態を 2 か所で別の文言にしない）。
+ * 空港そのものが決まっていない（通過・不明）ときは判定の対象が無いので「—」（同じ行の「空港」欄と揃える）
+ */
+function airportConfigText(icao: string | undefined, airportOps: readonly AirportOps[] | undefined): string {
+  if (nonEmpty(icao) === undefined) {
+    return DASH;
+  }
+  return airportConfigLabel(icao, airportOps) ?? AIRPORT_OPS_PENDING_TEXT;
 }
 
 /**

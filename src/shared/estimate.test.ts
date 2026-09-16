@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, confidenceLabel } from "./estimate.ts";
+import { CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, VERTICAL_RATE_THRESHOLD_FPM, confidenceLabel } from "./estimate.ts";
 
 describe("確度のしきい値", () => {
   it("高は 0.8 以上、中は 0.5 以上（1 箇所にだけ置く）", () => {
@@ -39,5 +39,13 @@ describe("AC-P2-24: confidenceLabel", () => {
 
   it("非有限（NaN）は「低」に倒す", () => {
     expect(confidenceLabel(Number.NaN, true)).toBe("低");
+  });
+});
+
+// W9 MINOR-2: クライアント（`format.ts` の verticalTrend）とサーバー（`phase.ts` のフェーズ判定・
+// `runway.ts` の候補条件）が同じ値を読むよう、定義をここ 1 箇所に集めた
+describe("昇降のしきい値", () => {
+  it("上昇／下降／水平の境界は 200fpm（1 箇所にだけ置く）", () => {
+    expect(VERTICAL_RATE_THRESHOLD_FPM).toBe(200);
   });
 });

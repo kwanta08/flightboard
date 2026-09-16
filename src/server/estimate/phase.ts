@@ -1,6 +1,7 @@
 // フェーズの判定（docs/spec.md §10.2 の表 / AC-P2-10〜15）。
 // 入力は単発の Flight だけで、航跡（TrackPoint[]）は使わない。I/O もグローバル状態も持たない純粋関数。
 // 高度は aircraftAltitudeFt（GNSS 優先。spec §11 と揃える）を使う。
+import { VERTICAL_RATE_THRESHOLD_FPM } from "../../shared/estimate.ts";
 import { type LatLon, aircraftAltitudeFt, bearingDeg, haversineKm } from "../../shared/geo.ts";
 import type { Flight } from "../../shared/types.ts";
 import { TARGET_AIRPORTS, type TargetAirport } from "../data/airports.ts";
@@ -19,8 +20,9 @@ export const ENROUTE_ALTITUDE_FT = 20_000;
 /**
  * 昇降率がこの値（fpm）以内なら水平飛行。降下中は −この値未満、上昇中は +この値より上。
  * 滑走路の候補条件（AC-P2-20 / 21）の「降下中／上昇中」も同じ値で判定する。
+ * 定義はクライアントと共有する `src/shared/estimate.ts` にあり（W9 MINOR-2）、ここは再輸出（サーバー側の入口は変えない）。
  */
-export const VERTICAL_RATE_THRESHOLD_FPM = 200;
+export { VERTICAL_RATE_THRESHOLD_FPM };
 
 /**
  * 進行方向と「機体 → 基準点」の方位の差がこの値（度）**未満**なら接近中、

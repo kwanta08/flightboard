@@ -468,7 +468,8 @@ function hndRouteEstimate(phase: "departure" | "arrival", distanceText: string):
   return {
     phase,
     confidence: 0.5,
-    evidence: [`羽田まで ${distanceText}km`, `adsbdb: RJTT ${phase === "departure" ? "発" : "着"}`],
+    // evidence の空港名は shortName に統一されている（W9 MINOR-3）
+    evidence: [`羽田まで ${distanceText}km`, `adsbdb: 羽田 ${phase === "departure" ? "発" : "着"}`],
     airport: { icao: "RJTT", name: "羽田" },
   };
 }
@@ -1376,6 +1377,69 @@ describe("GET /api/nearby: 運用方向（AC-P2-33・60〜62）", () => {
     expect(res.status).toBe(200);
     expect(body.airportOps).toEqual([]);
     expect(consoleError).toHaveBeenCalled();
+  });
+});
+
+
+/**
+ * W9 MAJOR-2: 同じ応答の中で `flights[].estimate`（route 付きで組み立てる）と `airportOps`（集計）が食い違わないこと。
+ * `composeApp` と同じ配線（行の推定と集計の推定が**同じ `getRoute`** を見る）で確かめる。
+ * AC-P2-16「幾何が裏を取れない機体には滑走路を当てない」は、行だけでなく集計にも効かなければならない
+ * （`basedOn` が 1〜2 の時間帯は、この 1 機がヘッダーの運用方向を決める）
+ */
+describe("GET /api/nearby: 行の推定と運用方向の集計が同じ入力で決まる（AC-P2-16）", () => {
+  /** 観測取得で `arrivingFlight`（幾何では RJTT 22 への進入）だけを返し、行と集計に同じルートのキャッシュを配る */
+  function setupOpsWithRoutes(routes: Record<string, RouteInfo>) {
+    const enrichment = fakeEnrichment(routes);
+    const t = setup(
+      byQuery([arrivingFlight("abc123")], () => []),
+      (now, positions) => ({
+        enrichment,
+        airportOps: createAirportOpsSource({ positions, now, getRoute: (callsign) => enrichment.getRoute(callsign) }),
+      }),
+    );
+    return { ...t, enrichment };
+  }
+
+  const HANEDA_LANDING_22 = {
+    icao: "RJTT",
+    landingRunways: ["22"],
+    departingRunways: [],
+    configLabel: "南風運用",
+    basedOn: 1,
+    updatedAt: iso(T0),
+  };
+
+  it("route が幾何と食い違う機体（adsbdb は羽田発・幾何は 22 へ進入）を、集計が着陸として数えない", async () => {
+    const t = setupOpsWithRoutes({ JAL001: ANA245_ROUTE }); // RJTT → RJFF（「羽田発」）
+
+    const { body } = await t.get(NEARBY);
+    const estimate = flightByHex(body, "abc123")?.estimate;
+    // 行は AC-P2-16 どおり「出発・滑走路なし」
+    expect(estimate?.phase).toBe("departure");
+    expect(estimate?.runway).toBeUndefined();
+    // 同じ機体を集計が「RWY22 着陸」として数えない（数えるとヘッダーが「南風運用」になり、行と食い違う）
+    expect(body.airportOps).toEqual([]);
+  });
+
+  it("route が幾何と一致する機体（adsbdb は羽田着）は、行と同じ滑走路で集計に入る", async () => {
+    const t = setupOpsWithRoutes({ JAL001: NCA001_ROUTE }); // RJFF → RJTT（「羽田着」）
+
+    const { body } = await t.get(NEARBY);
+    const estimate = flightByHex(body, "abc123")?.estimate;
+    expect(estimate?.phase).toBe("arrival");
+    expect(estimate?.runway).toBe("22");
+    expect(body.airportOps).toEqual([HANEDA_LANDING_22]);
+  });
+
+  it("ルートがキャッシュに無ければ従来どおり幾何だけで数え、集計のために adsbdb への照会を増やさない", async () => {
+    const t = setupOpsWithRoutes({});
+
+    const { body } = await t.get(NEARBY);
+    expect(flightByHex(body, "abc123")?.estimate?.runway).toBe("22");
+    expect(body.airportOps).toEqual([HANEDA_LANDING_22]);
+    // 積むのは `/api/nearby` の行の処理だけ（集計側はキャッシュを引くだけで積まない）
+    expect(t.enrichment.enqueued).toEqual([["JAL001"]]);
   });
 });
 
