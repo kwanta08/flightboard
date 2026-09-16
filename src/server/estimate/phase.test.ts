@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type LatLon, bearingDeg, destinationPoint } from "../../shared/geo.ts";
+import { type LatLon, bearingDeg, destinationPoint, haversineKm } from "../../shared/geo.ts";
 import type { Flight } from "../../shared/types.ts";
 import { type TargetAirport, TARGET_AIRPORTS, targetAirport } from "../data/airports.ts";
 import type { RunwayEnd } from "../data/importRunways.ts";
@@ -32,7 +32,7 @@ function endOf(icao: string, ident: string): RunwayEnd {
 
 /**
  * 滑走路の真方位（自端 → 対向端）を**テスト側で**計算する。
- * 使うのは src/shared/geo.ts の bearingDeg / haversineKm / destinationPoint だけで、
+ * 使うのは src/shared/geo.ts の bearingDeg だけで、
  * 実装（runway.ts の runwayBearingDeg）は呼ばない（呼ぶと退行しても同じ誤った線上に機体を置いてしまう）。
  */
 function trueBearingOf(end: RunwayEnd): number {
@@ -392,6 +392,43 @@ describe("接近中／離脱中の基準点は滑走路端（MINOR-2 の回帰�
       phase: "departure",
       airport: HANEDA,
     });
+  });
+});
+
+/**
+ * 空港どうしを比べる距離は「**向きの条件を満たした基準点（滑走路端）**までの距離」であり、
+ * 空港中心（ARP）までの距離ではない（review-code-W2-3 の MINOR-1）。
+ *
+ * 実在の 2 空港は約 60km 離れていて端の広がりは最大 4km なので、2 つの規則で順位が入れ替わる位置は作れない。
+ * そこで**テスト専用の空港と滑走路端**を合成して、規則そのものを固定する
+ * （合成に使うのは src/shared/geo.ts の destinationPoint / haversineKm だけ）。
+ */
+describe("空港どうしの比較は基準点（滑走路端）までの距離で行う", () => {
+  const ORIGIN: LatLon = { lat: 35.0, lon: 139.0 };
+  /** 機体の真北 km の地点（機体は真北へ飛ぶので、どれも「接近中」側に入る） */
+  const north = (km: number): LatLon => destinationPoint(ORIGIN, 0, km);
+  /** 端は近い（10km）が ARP は遠い（100km）空港 */
+  const NEAR_END: TargetAirport = { icao: "ZZAA", ...north(100) };
+  /** ARP は近い（20km）が端は遠い（21km）空港 */
+  const NEAR_ARP: TargetAirport = { icao: "ZZBB", ...north(20) };
+  const ENDS: readonly RunwayEnd[] = [
+    { icao: "ZZAA", ident: "36", ...north(10), oppositeIdent: "18" },
+    { icao: "ZZBB", ident: "36", ...north(21), oppositeIdent: "18" },
+  ];
+  const northbound = flight({ ...ORIGIN, trackDeg: 0, altitudeBaroFt: 3000, verticalRateFpm: -704 });
+
+  it("合成した 2 空港は、端で比べる場合と ARP で比べる場合で近い方が入れ替わる", () => {
+    expect(haversineKm(northbound.position, NEAR_END)).toBeCloseTo(100, 3);
+    expect(haversineKm(northbound.position, NEAR_ARP)).toBeCloseTo(20, 3);
+    expect(haversineKm(northbound.position, ENDS[0])).toBeCloseTo(10, 3);
+    expect(haversineKm(northbound.position, ENDS[1])).toBeCloseTo(21, 3);
+  });
+
+  it("端が近い方の空港を採る（ARP の遠近では決めない）", () => {
+    // ARP で比べれば ZZBB（20km < 100km）だが、基準点＝端で比べるので ZZAA（10km < 21km）になる
+    expect(detectPhase(northbound, [NEAR_END, NEAR_ARP], ENDS)).toEqual({ phase: "arrival", airport: NEAR_END });
+    // 配列の並び順で決まっていないことも見る
+    expect(detectPhase(northbound, [NEAR_ARP, NEAR_END], ENDS)).toEqual({ phase: "arrival", airport: NEAR_END });
   });
 });
 

@@ -7,7 +7,13 @@
 
 export type TargetAirport = {
   icao: string;
-  /** 空港の中心（ARP）の緯度・経度。空港中心の取得と、接近中／離脱中の判定に使う */
+  /**
+   * 空港の中心（ARP）の緯度・経度。空港中心の取得（`airportOpsSource`）と、
+   * `estimate/estimate.ts` の距離計算（evidence の「羽田まで Nkm」と、
+   * route の出発地・到着地が両方とも対象空港のときに近い方を採る比較）に使う。
+   * 接近中／離脱中の基準点は**滑走路端**に変わったので、判定で ARP を見るのは
+   * その空港の端が 1 つも渡されなかったときのフォールバックだけ（`estimate/phase.ts` の referencePoints）。
+   */
   lat: number;
   lon: number;
 };

@@ -563,6 +563,21 @@ describe("buildEstimate の引数", () => {
     expect(narrowed?.confidence).toBe(0.3);
   });
 
+  it("滑走路端を絞れば、フェーズの基準点もその端に従う", () => {
+    // 羽田 22 を離陸して 1km・高度 800ft・+1500fpm で上昇中の機体。
+    // 既定の 12 端なら、真後ろにある 22 の端を基準に「羽田から離脱中」＝出発になる。
+    // 交差する 16R の端だけに絞ると、基準点は前方（方位差 90° 未満）に残る 16R だけになり、
+    // 離脱中が成り立たなくなる（phase.test.ts の「向きの条件を満たす端が 1 つでもあれば」と同じ位置）。
+    // ends をフェーズ判定に渡していないと、ここが既定の 12 端のまま「出発」で残る
+    const justAirborne = flight({
+      ...departing(endOf("RJTT", "22"), { distanceKm: 1 }),
+      altitudeBaroFt: 800,
+      verticalRateFpm: 1500,
+    });
+    expect(buildEstimate(justAirborne, RUNWAY_ENDS, [HANEDA])?.phase).toBe("departure");
+    expect(buildEstimate(justAirborne, [endOf("RJTT", "16R")], [HANEDA])).toBeUndefined();
+  });
+
   it("対象空港を絞れば、その空港の滑走路端しか見ない", () => {
     const toNarita = flight({ ...approaching(endOf("RJAA", "16R"), { distanceKm: 12 }), altitudeBaroFt: 3000, verticalRateFpm: -704 });
     // 羽田だけを対象にすると、幾何は「羽田へ接近中」（58.5km 先）と読み、成田の 16R は候補に入らない。

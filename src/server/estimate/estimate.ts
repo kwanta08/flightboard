@@ -63,7 +63,8 @@ export function buildEstimate(
   ends: readonly RunwayEnd[] = RUNWAY_ENDS,
   airports: readonly TargetAirport[] = TARGET_AIRPORTS,
 ): Flight["estimate"] | undefined {
-  const geometry = detectPhase(flight, airports);
+  // ends はフェーズ判定にも渡す（基準点＝滑走路端。絞って渡したとき、フェーズの基準点と候補探索で見る端を揃える）
+  const geometry = detectPhase(flight, airports, ends);
   const route = routeBacking(flight, geometry, airports);
   // 最終的な phase は route 由来にし、滑走路の候補探索もその phase の条件で行う（AC-P2-14 / 19）
   const phase = route?.phase ?? geometry.phase;
