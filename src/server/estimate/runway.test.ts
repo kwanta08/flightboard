@@ -27,13 +27,14 @@ function endOf(icao: string, ident: string): RunwayEnd {
   return end;
 }
 
-/** 滑走路の真方位（自端 → 対向端）。見つからなければ落とす */
+/**
+ * 滑走路の真方位（自端 → 対向端）を**テスト側で**計算する。
+ * 実装の `runwayBearingDeg` は使わない（AC-P2-25 の「ヘルパが使ってよいのは bearingDeg / haversineKm /
+ * destinationPoint だけ」という制約。実装を呼ぶと、対向端の探索が退行しても
+ * 機体を同じ誤った線上に置いてしまい、テストが緑のまま素通りする）。
+ */
 function trueBearingOf(end: RunwayEnd): number {
-  const bearing = runwayBearingDeg(end, RUNWAY_ENDS);
-  if (bearing === undefined) {
-    throw new Error(`${end.icao} ${end.ident} の対向端が無い`);
-  }
-  return bearing;
+  return bearingDeg(end, endOf(end.icao, end.oppositeIdent));
 }
 
 const normalizeDeg = (deg: number): number => ((deg % 360) + 360) % 360;
@@ -112,8 +113,24 @@ describe("AC-P2-22: 許容ズレ = max(3, 20 − 距離km × 0.4)", () => {
 
 describe("runwayBearingDeg: 真方位は自端 → 対向端の座標から計算する", () => {
   it("RJTT 22 は約 215°、対向の 04 は約 35°（互いに約 180° 違う）", () => {
-    expect(trueBearingOf(endOf("RJTT", "22"))).toBeCloseTo(214.9, 1);
-    expect(trueBearingOf(endOf("RJTT", "04"))).toBeCloseTo(34.9, 1);
+    expect(runwayBearingDeg(endOf("RJTT", "22"), RUNWAY_ENDS)).toBeCloseTo(214.9, 1);
+    expect(runwayBearingDeg(endOf("RJTT", "04"), RUNWAY_ENDS)).toBeCloseTo(34.9, 1);
+  });
+
+  it("12 端すべてを渡しても、対向端は同じ空港の中から引く（RJAA 16L → 約 150°）", () => {
+    // 退行の形: 対向端の探索から icao の一致が落ちると、RJAA 16L の対向「34R」が
+    // RUNWAY_ENDS で先に並ぶ RJTT 34R に解決され、真方位が「成田 → 羽田」の約 241° になる。
+    const narita16L = endOf("RJAA", "16L");
+    expect(runwayBearingDeg(narita16L, RUNWAY_ENDS)).toBeCloseTo(150.1, 1);
+    expect(bearingDeg(narita16L, endOf("RJTT", "34R"))).toBeCloseTo(240.8, 1);
+  });
+
+  it("12 端すべてで、同じ空港の oppositeIdent へ向いた方位と一致する", () => {
+    expect(RUNWAY_ENDS).toHaveLength(12);
+    for (const end of RUNWAY_ENDS) {
+      // 期待値はテスト側で引いた対向端（icao と oppositeIdent の両方で一致するもの）から直接計算する
+      expect(runwayBearingDeg(end, RUNWAY_ENDS)).toBe(bearingDeg(end, endOf(end.icao, end.oppositeIdent)));
+    }
   });
 
   it("対向端が渡された配列に無ければ undefined（例外にしない）", () => {
@@ -219,7 +236,8 @@ describe("AC-P2-21: 出発の候補条件", () => {
   });
 
   it(`滑走路端から見て離陸方向 ${DEPARTURE_SECTOR_DEG}° を超えると候補から外れる`, () => {
-    for (const sectorDeg of [DEPARTURE_SECTOR_DEG + 0.2, -(DEPARTURE_SECTOR_DEG + 0.2)]) {
+    // 外側は他の境界（35.1km / 20.1°）と同じ 0.1 のはみ出しで示す
+    for (const sectorDeg of [DEPARTURE_SECTOR_DEG + 0.1, -(DEPARTURE_SECTOR_DEG + 0.1)]) {
       const candidates = departureCandidates(departingAircraft(endOf("RJTT", "16L"), { distanceKm: 5, sectorDeg }));
       expect(identsOf(candidates)).not.toContain("16L");
     }
@@ -256,6 +274,31 @@ describe("AC-P2-23: 採点 = 方位のズレ + 距離km × 0.3", () => {
     for (const candidate of candidates) {
       expect(candidate.score).toBeCloseTo(candidate.headingOffDeg + candidate.distanceKm * SCORE_DISTANCE_WEIGHT, 10);
     }
+  });
+
+  it("採点の値は公示値から独立に決まる（SKY706: 1.0° + 19.9km × 0.3 = 6.97）", () => {
+    // 期待値は spec §6.2-6 の公示値（19.9km・ズレ 1.0°）と §10.2 の式だけから出す（実装の定数を使わない）
+    const aircraft = approachingAircraft(endOf("RJTT", "23"), { distanceKm: 19.9, headingOffDeg: 1.0 });
+    const best = selectRunway({ ...aircraft, verticalRateFpm: DESCENDING_FPM, phase: "arrival" }, RUNWAY_ENDS);
+    expect(best?.end.ident).toBe("23");
+    expect(best?.score).toBeCloseTo(6.97, 6);
+  });
+
+  it("距離の重みが順位を決める（ズレは大きいが近い端が、ズレは小さいが遠い端に勝つ）", () => {
+    // 成田の平行滑走路 34L / 34R は真方位が約 1.05° しか違わないので、同じ機体が両方の候補になる。
+    // 34L の延長線 28km・ズレ +2.0° に置くと、34R はズレが約 0.95° と小さい代わりに約 4.1km 遠い。
+    // 距離の項の差（約 4.1 × 0.3 = 1.23）がズレの差（約 1.05）を上回るので、近い 34L が勝つ。
+    const aircraft = approachingAircraft(endOf("RJAA", "34L"), { distanceKm: 28, headingOffDeg: 2 });
+    const candidates = arrivalCandidates(aircraft);
+    expect(identsOf(candidates)).toEqual(["34L", "34R"]);
+    expect(candidates[0]!.headingOffDeg).toBeGreaterThan(candidates[1]!.headingOffDeg);
+    expect(candidates[0]!.distanceKm).toBeLessThan(candidates[1]!.distanceKm);
+    expect(candidates[0]!.score).toBeCloseTo(2 + 28 * 0.3, 6); // 10.4
+    // 距離の重みが 0 ならズレだけの順になり、順位は入れ替わる（＝この並びは重みが決めている）
+    expect([...candidates].sort((a, b) => a.headingOffDeg - b.headingOffDeg).map((c) => c.end.ident)).toEqual([
+      "34R",
+      "34L",
+    ]);
   });
 
   it("候補が無ければ selectRunway は undefined", () => {

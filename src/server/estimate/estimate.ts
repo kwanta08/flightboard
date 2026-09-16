@@ -54,6 +54,7 @@ type RouteBacking = { phase: "arrival" | "departure"; airport: TargetAirport };
  * 単発の Flight から推定を組み立てる。生成規則（plan の表）:
  * - 進入／出発で滑走路が決まった → estimate あり（runway あり）
  * - 進入／出発で滑走路が決まらない → estimate あり（runway なし。route の裏付けがあれば 0.5、幾何のみ 0.3）
+ *   幾何が裏を取れない（unknown・route と食い違う）ときも滑走路は決めない（AC-P2-16。食い違いなら 0.5 − 0.2 = 0.3）
  * - 通過 → estimate あり（airport・runway なし、0.5）
  * - 不明 かつ 滑走路なし → undefined（推定を付けない）
  */
@@ -69,7 +70,12 @@ export function buildEstimate(
 
   // 候補探索は対象空港の滑走路端だけを見る（ends と airports で見る空港が食い違わないようにする）
   const targetEnds = ends.filter((end) => airports.some((airport) => airport.icao === end.icao));
-  const candidate = phase === "arrival" || phase === "departure" ? searchRunway(flight, phase, targetEnds) : undefined;
+  // AC-P2-16: 候補探索は「幾何判定の phase が最終的な phase と一致する」ときだけ行う
+  // （spec §10.2「第一候補には adsbdb を使い、幾何判定で裏を取る」の「裏を取る」がこれ）。
+  // 幾何が unknown のとき（高度・trackDeg・verticalRateFpm の欠損、AC-P2-10/11 の高度条件を満たさない機体）も、
+  // route と食い違うときも一致しないので、滑走路は決めない。
+  const searchPhase = (phase === "arrival" || phase === "departure") && geometry.phase === phase ? phase : undefined;
+  const candidate = searchPhase ? searchRunway(flight, searchPhase, targetEnds) : undefined;
   const runwayAirport = candidate ? findAirport(airports, candidate.end.icao) : undefined;
   // 滑走路が決まればその空港。決まらなければ route の裏付け → 接近／離脱と判定した空港の順
   const airport = phase === "enroute" ? undefined : (runwayAirport ?? route?.airport ?? geometry.airport);
@@ -174,7 +180,11 @@ function describeDisagreement(
   return `幾何判定は ${[airportText, phaseText].filter((part) => part !== undefined).join(" ")}`;
 }
 
-/** 滑走路の候補探索。進行方向・昇降率が欠けていれば探索しない（AC-P2-15） */
+/**
+ * 滑走路の候補探索。進行方向・昇降率が欠けていれば探索しない（AC-P2-15）。
+ * AC-P2-16 により、幾何判定が同じ phase を返したとき（＝ detectPhase が両方を有限だと確かめたとき）
+ * しか呼ばれないので、この番人は実際には通り抜けるだけだが、関数単体の契約として残す。
+ */
 function searchRunway(
   flight: Flight,
   phase: "arrival" | "departure",

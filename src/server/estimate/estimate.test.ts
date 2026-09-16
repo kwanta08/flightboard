@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 import { confidenceLabel } from "../../shared/estimate.ts";
 import { type LatLon, bearingDeg, destinationPoint } from "../../shared/geo.ts";
 import type { Airport, Flight } from "../../shared/types.ts";
-import { type TargetAirport, targetAirport } from "../data/airports.ts";
+import { TARGET_AIRPORTS, type TargetAirport, targetAirport } from "../data/airports.ts";
 import type { RunwayEnd } from "../data/importRunways.ts";
-import { RUNWAY_ENDS } from "../data/runways.ts";
+import { RUNWAY_ENDS, runwayEndsFor } from "../data/runways.ts";
 import { applyDisagreementPenalty, buildEstimate } from "./estimate.ts";
-import { runwayBearingDeg } from "./runway.ts";
 
 function airportOf(icao: string): TargetAirport {
   const airport = targetAirport(icao);
@@ -24,13 +23,14 @@ function endOf(icao: string, ident: string): RunwayEnd {
   return end;
 }
 
-/** 滑走路の真方位（自端 → 対向端の座標から計算する） */
+/**
+ * 滑走路の真方位（自端 → 対向端）を**テスト側で**計算する。
+ * 実装の `runwayBearingDeg` は使わない（AC-P2-25 のヘルパが使ってよいのは
+ * bearingDeg / haversineKm / destinationPoint だけ。実装を呼ぶと、対向端の探索が退行しても
+ * 機体を同じ誤った線上に置いてしまい、テストが緑のまま素通りする）。
+ */
 function trueBearingOf(end: RunwayEnd): number {
-  const bearing = runwayBearingDeg(end, RUNWAY_ENDS);
-  if (bearing === undefined) {
-    throw new Error(`${end.icao} ${end.ident} の対向端が無い`);
-  }
-  return bearing;
+  return bearingDeg(end, endOf(end.icao, end.oppositeIdent));
 }
 
 const HANEDA = airportOf("RJTT");
@@ -227,6 +227,65 @@ describe("AC-P2-19: 候補探索は進入・出発のときだけ", () => {
   });
 });
 
+/**
+ * AC-P2-16: 候補探索は「幾何判定の phase が最終的な phase と一致する」ときだけ行う
+ * （spec §10.2「第一候補には adsbdb を使い、幾何判定で裏を取る」）。
+ * adsbdb のルート取得率は旅客機でほぼ 100%（spec §6.5）なので、route があるだけで滑走路が付くと
+ * 「高度が取れないのに RWY22 進入 確度:高」が実運用でほぼ全機に出てしまう。
+ * どの機体も羽田 22 の延長線 10km を降下中（幾何が裏を取れれば RWY22 が決まる位置）に置いている。
+ */
+describe("AC-P2-16: 幾何が裏を取れなければ滑走路を付けない", () => {
+  const onFinal = approaching(endOf("RJTT", "22"), { distanceKm: 10 });
+  const arrivingAtHaneda = { origin: "RJOO", destination: "RJTT" } as const;
+
+  it("対照: 幾何も進入と言うなら RWY22・確度「高」になる", () => {
+    const estimate = buildEstimate(
+      flight({ ...onFinal, altitudeBaroFt: 1825, verticalRateFpm: -704, route: arrivingAtHaneda }),
+    );
+    expect(estimate?.phase).toBe("arrival");
+    expect(estimate?.runway).toBe("22");
+    expect(estimate?.confidence).toBe(0.9);
+    expect(confidenceLabel(estimate?.confidence ?? 0, estimate?.runway !== undefined)).toBe("高");
+  });
+
+  it.each([
+    ["高度が取れない（気圧高度も GNSS 高度も無い）", { altitudeBaroFt: null }],
+    ["昇降率が欠けている", { verticalRateFpm: undefined }],
+    ["昇降率が NaN", { verticalRateFpm: Number.NaN }],
+    ["進行方向が欠けている", { trackDeg: undefined }],
+    ["高度 15,000ft（AC-P2-10 の 10,000ft 未満を満たさない）", { altitudeBaroFt: 15000 }],
+  ] as const)("%s 機体では、route があっても滑走路を付けない", (_name, missing) => {
+    // 幾何は unknown（AC-P2-15 / AC-P2-10）。route は「羽田着」なので phase は進入のまま
+    const estimate = buildEstimate(
+      flight({ ...onFinal, altitudeBaroFt: 1825, verticalRateFpm: -704, ...missing, route: arrivingAtHaneda }),
+    );
+    expect(estimate?.phase).toBe("arrival");
+    expect(estimate?.airport).toEqual({ icao: "RJTT", name: "羽田" });
+    expect(estimate?.runway).toBeUndefined();
+    expect(estimate?.confidence).toBe(0.5);
+    expect(confidenceLabel(estimate?.confidence ?? 0, estimate?.runway !== undefined)).toBeUndefined();
+    // 滑走路由来の evidence（方位のズレ・滑走路まで）は出ない
+    expect(estimate?.evidence.some((line) => line.startsWith("方位のズレ") || line.startsWith("滑走路まで"))).toBe(
+      false,
+    );
+  });
+
+  it("route と幾何が食い違うときも滑走路を付けず、減点する", () => {
+    // 成田 16R の延長線 12km を降下中（幾何では成田への進入）だが、adsbdb は「成田発」と言っている
+    const onFinal16R = approaching(endOf("RJAA", "16R"), { distanceKm: 12 });
+    const base = { ...onFinal16R, altitudeBaroFt: 3000, verticalRateFpm: -704 };
+    // 対照: route が幾何と同じ「成田着」なら RWY16R が決まる
+    expect(buildEstimate(flight({ ...base, route: { origin: "RJOO", destination: "RJAA" } }))?.runway).toBe("16R");
+
+    const estimate = buildEstimate(flight({ ...base, route: { origin: "RJAA", destination: "RJOO" } }));
+    expect(estimate?.phase).toBe("departure");
+    expect(estimate?.runway).toBeUndefined();
+    expect(estimate?.confidence).toBe(0.3); // 0.5 − 0.2（AC-P2-14 の減点）
+    expect(estimate?.evidence).toContain("adsbdb: RJAA 発");
+    expect(estimate?.evidence).toContain("幾何判定は 進入");
+  });
+});
+
 describe("confidence の素点（滑走路が決まったとき）", () => {
   it("ズレ < 2° かつ 距離 < 25km なら 0.9", () => {
     const estimate = buildEstimate(
@@ -254,6 +313,36 @@ describe("confidence の素点（滑走路が決まったとき）", () => {
     expect(estimate?.confidence).toBe(0.3);
     expect(confidenceLabel(estimate?.confidence ?? 0, true)).toBe("低");
   });
+
+  /**
+   * 素点の境界（ズレ 2°・距離 25km・許容ズレ × 0.5）で 1 段下がること。
+   * 境界ちょうどの値は測地線の往復（destinationPoint → haversineKm）で 1e-12 程度の誤差が乗るので、
+   * 他の境界テスト（35.1km / 20.1°）と同じく内側・外側を 0.01° / 0.1km で挟んで示す。
+   */
+  describe("素点の境界", () => {
+    const confidenceAt = (distanceKm: number, headingOffDeg: number): number | undefined =>
+      buildEstimate(
+        flight({
+          ...approaching(endOf("RJTT", "22"), { distanceKm, headingOffDeg }),
+          altitudeBaroFt: 3000,
+          verticalRateFpm: -704,
+        }),
+      )?.confidence;
+
+    it.each([
+      // 距離 24km（許容 10.4°・その半分 5.2°）で、ズレ 2° を境に 0.9 → 0.6
+      ["ズレ 2° の内側（1.99°・24km）", 24, 1.99, 0.9],
+      ["ズレ 2° の外側（2.01°・24km）", 24, 2.01, 0.6],
+      // ズレ 0.1°（どちらも許容の半分未満）で、距離 25km を境に 0.9 → 0.6
+      ["距離 25km の内側（24.9km・0.1°）", 24.9, 0.1, 0.9],
+      ["距離 25km の外側（25.1km・0.1°）", 25.1, 0.1, 0.6],
+      // 距離 10km なら許容 16°・その半分は 8°。ここを境に 0.6 → 0.3
+      ["許容 × 0.5 の内側（7.99°・10km）", 10, 7.99, 0.6],
+      ["許容 × 0.5 の外側（8.01°・10km）", 10, 8.01, 0.3],
+    ])("%s → %s", (_name, distanceKm, headingOffDeg, expected) => {
+      expect(confidenceAt(distanceKm, headingOffDeg)).toBe(expected);
+    });
+  });
 });
 
 describe("AC-P2-14: route の裏付け", () => {
@@ -278,7 +367,8 @@ describe("AC-P2-14: route の裏付け", () => {
 
   it("滑走路の候補探索も route 由来の phase の条件で行う", () => {
     // 羽田 22 の延長線上を降下中（幾何では進入）だが、adsbdb は羽田発と言っている。
-    // phase は route 由来の「出発」になるので、候補探索は出発の条件（上昇中）で行われ、滑走路は決まらない
+    // phase は route 由来の「出発」になる。幾何（進入）と一致しないので候補探索自体が走らず（AC-P2-16）、
+    // 仮に走ったとしても出発の条件（上昇中）を満たさないので、いずれにせよ滑走路は決まらない
     const estimate = buildEstimate(
       flight({ ...approaching(endOf("RJTT", "22"), { distanceKm: 12 }), altitudeBaroFt: 3000, verticalRateFpm: -704, route: { origin: "RJTT", destination: "RJOO" } }),
     );
@@ -401,9 +491,25 @@ describe("buildEstimate の引数", () => {
     expect(buildEstimate(onFinal)?.runway).toBe("22");
   });
 
+  it("他空港の滑走路端しか渡さなければ、phase は進入のまま runway だけ決まらない", () => {
+    const toNarita = flight({ ...approaching(endOf("RJAA", "16R"), { distanceKm: 12 }), altitudeBaroFt: 3000, verticalRateFpm: -704 });
+    expect(buildEstimate(toNarita)?.runway).toBe("16R");
+
+    // 空港は両方渡し、滑走路端だけ羽田に絞る。幾何は変わらないので進入・成田のまま滑走路が落ちる
+    const narrowed = buildEstimate(toNarita, runwayEndsFor("RJTT"), TARGET_AIRPORTS);
+    expect(narrowed?.phase).toBe("arrival");
+    expect(narrowed?.airport).toEqual({ icao: "RJAA", name: "成田" });
+    expect(narrowed?.runway).toBeUndefined();
+    expect(narrowed?.confidence).toBe(0.3);
+  });
+
   it("対象空港を絞れば、その空港の滑走路端しか見ない", () => {
     const toNarita = flight({ ...approaching(endOf("RJAA", "16R"), { distanceKm: 12 }), altitudeBaroFt: 3000, verticalRateFpm: -704 });
-    expect(buildEstimate(toNarita)?.airport?.icao).toBe("RJAA");
-    expect(buildEstimate(toNarita, RUNWAY_ENDS, [HANEDA])?.runway).toBeUndefined();
+    // 羽田だけを対象にすると、幾何は「羽田へ接近中」（58.5km 先）と読み、成田の 16R は候補に入らない。
+    // 絞り込みが効かなければ、羽田の推定に成田の RWY16R が付く（airport と runway が食い違う）
+    const hanedaOnly = buildEstimate(toNarita, RUNWAY_ENDS, [HANEDA]);
+    expect(hanedaOnly?.phase).toBe("arrival");
+    expect(hanedaOnly?.airport).toEqual({ icao: "RJTT", name: "羽田" });
+    expect(hanedaOnly?.runway).toBeUndefined();
   });
 });
