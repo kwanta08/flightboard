@@ -13,9 +13,15 @@ import {
   intervalOptionValue,
   loadSettings,
   SAVE_FAILED_MESSAGE,
+  saveFailedMessage,
   saveSettings,
   SPEED_UNIT_OPTIONS,
   speedUnitFromValue,
+  withAltitudeUnit,
+  withIntervalMs,
+  withKindOption,
+  withRadiusKm,
+  withSpeedUnit,
   type Settings,
 } from "./settingsStore.ts";
 
@@ -52,6 +58,34 @@ describe("DEFAULT_SETTINGS", () => {
       units: { altitude: "m", speed: "kmh" },
     });
     expect(DEFAULT_UNITS).toEqual({ altitude: "m", speed: "kmh" });
+  });
+});
+
+describe("設定の 1 項目だけを変える", () => {
+  it("半径・更新間隔・種類は、その項目だけを置き換える", () => {
+    expect(withRadiusKm(DEFAULT_SETTINGS, 25)).toEqual({ ...DEFAULT_SETTINGS, radiusKm: 25 });
+    expect(withIntervalMs(DEFAULT_SETTINGS, 30_000)).toEqual({ ...DEFAULT_SETTINGS, intervalMs: 30_000 });
+    expect(withKindOption(DEFAULT_SETTINGS, "cargo")).toEqual({ ...DEFAULT_SETTINGS, kindOption: "cargo" });
+  });
+
+  it("高度の単位を変えても速度の単位は保つ（逆も同じ）", () => {
+    expect(withAltitudeUnit(CHANGED, "m").units).toEqual({ altitude: "m", speed: "kt" });
+    expect(withSpeedUnit(CHANGED, "kmh").units).toEqual({ altitude: "ft", speed: "kmh" });
+  });
+
+  it("元の設定は変えない（新しいオブジェクトを返す）", () => {
+    const before = { ...DEFAULT_SETTINGS, units: { ...DEFAULT_SETTINGS.units } };
+    const next = withAltitudeUnit(DEFAULT_SETTINGS, "ft");
+    expect(DEFAULT_SETTINGS).toEqual(before);
+    expect(next).not.toBe(DEFAULT_SETTINGS);
+    expect(next.units).not.toBe(DEFAULT_SETTINGS.units);
+  });
+});
+
+describe("saveFailedMessage", () => {
+  it("失敗しているときだけ文言を出す（していなければ空文字）", () => {
+    expect(saveFailedMessage(true)).toBe(SAVE_FAILED_MESSAGE);
+    expect(saveFailedMessage(false)).toBe("");
   });
 });
 

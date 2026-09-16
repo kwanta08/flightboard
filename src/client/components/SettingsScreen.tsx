@@ -31,12 +31,17 @@ import {
   INTERVAL_SELECT_LABEL,
   intervalMsFromValue,
   intervalOptionValue,
-  SAVE_FAILED_MESSAGE,
+  saveFailedMessage,
   SETTINGS_CLOSE_LABEL,
   SETTINGS_TITLE,
   SPEED_UNIT_OPTIONS,
   SPEED_UNIT_SELECT_LABEL,
   speedUnitFromValue,
+  withAltitudeUnit,
+  withIntervalMs,
+  withKindOption,
+  withRadiusKm,
+  withSpeedUnit,
   type Settings,
 } from "../lib/settingsStore.ts";
 
@@ -47,6 +52,8 @@ type SettingsScreenProps = {
   saveFailed: boolean;
   /** 見出し（画面の切り替え時に App がここへフォーカスを移す） */
   headingRef?: Ref<HTMLHeadingElement>;
+  /** 選択中の地点のラジオ（削除で［選択中の地点を削除］が無効になるとき、App がここへフォーカスを移す） */
+  selectedLocationRef?: Ref<HTMLInputElement>;
   onSelectLocation(id: string): void;
   onAddLocation(): void;
   onEditLocation(): void;
@@ -60,6 +67,7 @@ export function SettingsScreen({
   settings,
   saveFailed,
   headingRef,
+  selectedLocationRef,
   onSelectLocation,
   onAddLocation,
   onEditLocation,
@@ -69,29 +77,30 @@ export function SettingsScreen({
 }: SettingsScreenProps) {
   const selected = selectedLocation(book);
 
+  // 選択欄の値の検証も、変えた設定の組み立ても lib（listView・settingsStore）が行う
   const handleRadiusChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const next = radiusFromValue(event.target.value);
-    if (next !== undefined) onSettingsChange({ ...settings, radiusKm: next });
+    if (next !== undefined) onSettingsChange(withRadiusKm(settings, next));
   };
 
   const handleIntervalChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const next = intervalMsFromValue(event.target.value);
-    if (next !== undefined) onSettingsChange({ ...settings, intervalMs: next });
+    if (next !== undefined) onSettingsChange(withIntervalMs(settings, next));
   };
 
   const handleKindChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const next = kindOptionFromValue(event.target.value);
-    if (next !== undefined) onSettingsChange({ ...settings, kindOption: next });
+    if (next !== undefined) onSettingsChange(withKindOption(settings, next));
   };
 
   const handleAltitudeUnitChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const next = altitudeUnitFromValue(event.target.value);
-    if (next !== undefined) onSettingsChange({ ...settings, units: { ...settings.units, altitude: next } });
+    if (next !== undefined) onSettingsChange(withAltitudeUnit(settings, next));
   };
 
   const handleSpeedUnitChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const next = speedUnitFromValue(event.target.value);
-    if (next !== undefined) onSettingsChange({ ...settings, units: { ...settings.units, speed: next } });
+    if (next !== undefined) onSettingsChange(withSpeedUnit(settings, next));
   };
 
   return (
@@ -108,7 +117,7 @@ export function SettingsScreen({
 
         {/* 保存に失敗したときだけ出す（localStorage が使えない・容量超過。plan「エラー処理について」2） */}
         <p className="settings-error" aria-live="polite">
-          {saveFailed ? SAVE_FAILED_MESSAGE : ""}
+          {saveFailedMessage(saveFailed)}
         </p>
 
         <section className="settings-section" aria-label={LOCATION_SECTION_TITLE}>
@@ -122,6 +131,7 @@ export function SettingsScreen({
                     name="settings-location"
                     value={location.id}
                     checked={location.id === selected?.id}
+                    ref={location.id === selected?.id ? selectedLocationRef : undefined}
                     onChange={() => onSelectLocation(location.id)}
                   />
                   <span>{formatLocationOption(location)}</span>

@@ -12,6 +12,7 @@ import {
   formatAccuracy,
   initialSetupState,
   LOCATION_CHANGE_LABEL,
+  setupTitle,
   pinFromMapPoint,
   pinFromResult,
   placePinByUser,
@@ -96,10 +97,47 @@ describe("initialSetupState", () => {
     expect(state.pinSource).toBeUndefined();
   });
 
+  it("add で開いたときは現在値を中心にするだけでピンは置かず、測位も要求しない（触らず確定して同じ地点が増えない）", () => {
+    const state = initialSetupState(OCEAN, "add");
+    expect(state).toEqual({
+      center: { lat: 30, lon: 150 },
+      geolocation: { phase: "idle" },
+      elevationText: "0",
+      requestGeolocation: false,
+    });
+    expect(state.pin).toBeUndefined();
+    expect(state.pinSource).toBeUndefined();
+    // ピンが無いので確定できない（地図で指定させる）
+    expect(confirmLocation(state.pin, state.elevationText).ok).toBe(false);
+    expect(setupMessage(state)).toBe("地図をクリックして地点を指定してください");
+  });
+
+  it("add で現在値が無ければ仮の中心（それでもピンは置かず測位も要求しない）", () => {
+    expect(initialSetupState(undefined, "add")).toEqual({
+      center: DEFAULT_CENTER,
+      geolocation: { phase: "idle" },
+      elevationText: "0",
+      requestGeolocation: false,
+    });
+  });
+
+  it("change を渡したときは省略したときと同じ", () => {
+    expect(initialSetupState(OCEAN, "change")).toEqual(initialSetupState(OCEAN));
+    expect(initialSetupState(undefined, "change")).toEqual(initialSetupState());
+  });
+
   it("初期状態の中心を書き換えても DEFAULT_CENTER は変わらない", () => {
     const state = initialSetupState();
     state.center.lat = 0;
     expect(DEFAULT_CENTER).toEqual({ lat: 35.86, lon: 139.9 });
+  });
+});
+
+describe("setupTitle", () => {
+  it("add で開いたら「地点を追加」、それ以外は「地点の設定」（［変更］と見分けが付く）", () => {
+    expect(setupTitle("add")).toBe("地点を追加");
+    expect(setupTitle("change")).toBe("地点の設定");
+    expect(setupTitle()).toBe("地点の設定");
   });
 });
 

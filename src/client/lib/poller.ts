@@ -85,7 +85,8 @@ export type Poller<P> = {
   setParams(params: P): void;
   /**
    * 自動更新の間隔を変える（F-06 の設定。再読み込みなしで実行中のポーリングに反映する。AC-P2-74）。
-   * 開始済みなら刻みのタイマーを作り直す（次の刻みはここから `intervalMs` 後）。要求はここでは送らない
+   * 開始済みなら刻みのタイマーを作り直す（次の刻みはここから `intervalMs` 後）。要求はここでは送らない。
+   * 正の有限値でなければ（0・負数・NaN・Infinity）無視して今の間隔のままにする
    */
   setIntervalMs(intervalMs: number): void;
   /** 自動更新をやめる（タイマーと可視状態の購読を解除し、進行中の要求を中断する） */
@@ -101,6 +102,11 @@ type PendingRequest = { controller: AbortController; revision: number; timeoutId
 
 /** 開始済みの間だけ持つ、刻みのタイマーと可視状態の購読 */
 type Running = { timerId: unknown; unsubscribe: () => void };
+
+/** 自動更新の間隔として使える値か。0・負数・NaN・Infinity は使えない（刻みが即時になり、応答のたびに送り続けてしまう） */
+function isUsableIntervalMs(ms: number): boolean {
+  return Number.isFinite(ms) && ms > 0;
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message !== "" ? error.message : MESSAGE_LOAD_FAILED;
@@ -274,7 +280,8 @@ export function createPoller<P>(options: PollerOptions<P>): Poller<P> {
     },
 
     setIntervalMs(next) {
-      if (next === intervalMs) return;
+      // 使えない値は黙って無視する（公開 API なので、呼び出し側の検証に頼らない）
+      if (!isUsableIntervalMs(next) || next === intervalMs) return;
       intervalMs = next;
       // 開始済みなら新しい間隔で刻み直す（進行中の要求はそのまま。間隔を変えただけで 1 本増やさない）
       if (running !== undefined) restartTimer(running);

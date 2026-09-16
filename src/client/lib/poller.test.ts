@@ -1080,6 +1080,28 @@ describe("createPoller: 更新間隔の変更（AC-P2-74）", () => {
     expect(loader.call(0).signal.aborted).toBe(false);
   });
 
+  it.each([
+    ["0", 0],
+    ["負数", -1_000],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+  ])("使えない間隔（%s）は無視して今の間隔のままにする", async (_name, invalid) => {
+    const { poller, timers, loader } = setup();
+    poller.start(A);
+    loader.call(0).resolve(response("t1"));
+    await flush();
+
+    poller.setIntervalMs(invalid);
+    // タイマーを作り直さない（間隔は 10 秒のまま）
+    expect(timers.created.map((timer) => timer.ms)).toEqual([DEFAULT_POLL_INTERVAL_MS]);
+    expect(timers.cleared).toEqual([]);
+    // 刻みが即時にならない（10 秒たつまで次を送らない）
+    timers.advance(DEFAULT_POLL_INTERVAL_MS - 1);
+    expect(loader.calls).toHaveLength(1);
+    timers.advance(1);
+    expect(loader.calls).toHaveLength(2);
+  });
+
   it("停止中に変えた間隔は、再開したときの刻みから使う", () => {
     const { poller, timers } = setup();
     poller.start(A);

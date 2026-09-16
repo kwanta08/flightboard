@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormE
 import { MapContainer, Marker, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { OSM_ATTRIBUTION, OSM_TILE_URL } from "../lib/credits.ts";
 import { requestPosition } from "../lib/geolocation.ts";
-import type { Location } from "../lib/locationStore.ts";
+import type { Location, LocationEditMode } from "../lib/locationStore.ts";
 import {
   applyGeolocationResult,
   canCancelSetup,
@@ -15,6 +15,7 @@ import {
   placePinByUser,
   SETUP_MAP_ZOOM,
   setupMessage,
+  setupTitle,
   type LatLon,
   type MapPoint,
   type SetupTransition,
@@ -22,6 +23,11 @@ import {
 
 type SetupScreenProps = {
   current?: Location;
+  /**
+   * 開いた目的（add: 地点を追加 / change: 選択中の地点を変更）。
+   * 見出しと初期状態（ピンを置くか）はこの目的から lib が決める。省略時は change
+   */
+  mode?: LocationEditMode;
   /** 見出し（画面の切り替え時に App がここへフォーカスを移す） */
   headingRef?: Ref<HTMLHeadingElement>;
   onConfirm(location: Location): void;
@@ -52,8 +58,9 @@ function CenterOn({ target }: { target: LatLon }) {
   return null;
 }
 
-export function SetupScreen({ current, headingRef, onConfirm, onCancel }: SetupScreenProps) {
-  const [initial] = useState(() => initialSetupState(current));
+export function SetupScreen({ current, mode, headingRef, onConfirm, onCancel }: SetupScreenProps) {
+  const [initial] = useState(() => initialSetupState(current, mode));
+  const title = setupTitle(mode);
   const [setup, setSetup] = useState<SetupTransition>(() => ({ state: initial }));
   const { state, recenter } = setup;
 
@@ -116,10 +123,10 @@ export function SetupScreen({ current, headingRef, onConfirm, onCancel }: SetupS
   };
 
   return (
-    <main className="setup" aria-label="地点の設定">
+    <main className="setup" aria-label={title}>
       <form className="setup-panel" onSubmit={handleSubmit}>
         <h2 className="setup-title" ref={headingRef} tabIndex={-1}>
-          地点の設定
+          {title}
         </h2>
         <p className="setup-message" aria-live="polite">
           {setupMessage(state)}

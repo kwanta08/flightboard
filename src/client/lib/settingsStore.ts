@@ -51,6 +51,33 @@ export const DEFAULT_SETTINGS: Settings = {
   units: DEFAULT_UNITS,
 };
 
+// ---- 設定の 1 項目だけを変えた設定を作る（設定画面・ツールバーの配線から組み立ての判断を無くす） ----
+
+/** 検索半径を変えた設定 */
+export function withRadiusKm(settings: Settings, radiusKm: number): Settings {
+  return { ...settings, radiusKm };
+}
+
+/** 更新間隔（ms）を変えた設定 */
+export function withIntervalMs(settings: Settings, intervalMs: number): Settings {
+  return { ...settings, intervalMs };
+}
+
+/** 表示する機体の種類を変えた設定 */
+export function withKindOption(settings: Settings, kindOption: KindOptionValue): Settings {
+  return { ...settings, kindOption };
+}
+
+/** 高度の単位を変えた設定（速度の単位は保つ） */
+export function withAltitudeUnit(settings: Settings, altitude: AltitudeUnit): Settings {
+  return { ...settings, units: { ...settings.units, altitude } };
+}
+
+/** 速度の単位を変えた設定（高度の単位は保つ） */
+export function withSpeedUnit(settings: Settings, speed: SpeedUnit): Settings {
+  return { ...settings, units: { ...settings.units, speed } };
+}
+
 function parseRadiusKm(value: unknown): number {
   return RADIUS_OPTIONS.some((option) => option.km === value) ? (value as number) : DEFAULT_SETTINGS.radiusKm;
 }
@@ -167,3 +194,11 @@ export const CREDITS_SECTION_TITLE = "データ提供元";
 /** 保存に失敗したときに設定画面へ出す文言（localStorage の容量超過・利用不可） */
 export const SAVE_FAILED_MESSAGE =
   "保存できませんでした（このブラウザでは保存領域が使えないか、容量を超えています）。変更はこの画面では有効ですが、次に開いたときには元に戻ります";
+
+/**
+ * 設定画面に出す保存失敗の文言。失敗していなければ空文字
+ * （領域（aria-live）は常に置いたままにして、文字だけを入れ替える）
+ */
+export function saveFailedMessage(saveFailed: boolean): string {
+  return saveFailed ? SAVE_FAILED_MESSAGE : "";
+}

@@ -145,7 +145,9 @@ export function formatLocationHeader(location: Location | undefined): string {
  * 保存形式 v2 のキー。`{ version, locations, selectedId, settings }` を 1 本にまとめる。
  * settings の中身はここでは読まない（`settingsStore.ts` が同じキーの settings 部分を読み書きする）。
  * v1 のキー（`LOCATION_STORAGE_KEY`）は消さず、保存のたびに選択中の地点を書き戻す
- * （v2 キーを消せば v1 の挙動に戻り、移行後の編集も失われない）
+ * （v2 キーを消せば v1 の挙動に戻り、移行後の編集も失われない）。
+ * 同期は片方向で、**v1 → v2 は起動時の移行の 1 回だけ**（`initLocations`。v2 が読めないときに限る）。
+ * 以後は v2 が正なので、旧版のアプリで v1 を書き換えてから新版を開いても v2 の一覧が勝つ（v1 の変更は取り込まれない）
  */
 export const APP_STORAGE_KEY = "flightboard.app.v2";
 
@@ -215,9 +217,15 @@ function readBook(storage: Pick<Storage, "getItem"> | undefined): { book: Locati
     const locations = record.locations
       .map((entry: unknown) => parseNamedLocation(entry))
       .filter((entry): entry is NamedLocation => entry !== undefined);
-    return { book: normalizeBook(locations, record.selectedId), fromV2: true };
+    // 有効な地点が 1 件も残らなかったときは「読めなかった」と同じに扱い、下の v1 へ落ちる。
+    // アプリが空の一覧を書く経路は無い（`canRemoveLocation` が最後の 1 件を消させず、`initLocations` も空なら書かない）ので、
+    // 空の一覧は壊れた保存値であり、ここで v1 に落とさないと移行前の地点が次の保存で上書きされて消える
+    if (locations.length > 0) {
+      return { book: normalizeBook(locations, record.selectedId), fromV2: true };
+    }
   }
-  // v2 が無い・版が違う・壊れている → v1 の単一地点に落ちる（v2 の破損で既存の地点まで見えなくならないように）
+  // v2 が無い・版が違う・壊れている（有効な地点が 0 件を含む） → v1 の単一地点に落ちる
+  // （v2 の破損で既存の地点まで見えなくならないように）
   const single = loadLocation(storage);
   if (single === undefined) {
     return { book: { locations: [], selectedId: undefined }, fromV2: false };
@@ -234,16 +242,20 @@ export function loadLocations(storage: Pick<Storage, "getItem"> | undefined): Lo
   return readBook(storage).book;
 }
 
+/** 起動時の読み出しの結果。`saveFailed` は移行の書き出しに失敗したか（設定画面の保存失敗の表示に使う） */
+export type LocationInit = { book: LocationBook; saveFailed: boolean };
+
 /**
  * 起動時の読み出し。v2 キーから読めなかったときは v1 の地点を v2 として書き出す（移行。v1 キーは消さない）。
- * 書き出しに失敗しても読めた内容はそのまま返す（この起動中は使える）
+ * 書き出しに失敗しても読めた内容はそのまま返し（この起動中は使える）、失敗したことを `saveFailed` で伝える
+ * （storage が読み取り専用の環境で、利用者が何かを変える前に設定画面へ出せるように）
  */
-export function initLocations(storage: LocationStorage | undefined): LocationBook {
+export function initLocations(storage: LocationStorage | undefined): LocationInit {
   const { book, fromV2 } = readBook(storage);
   if (!fromV2 && book.locations.length > 0) {
-    saveLocations(storage, book);
+    return { book, saveFailed: !saveLocations(storage, book) };
   }
-  return book;
+  return { book, saveFailed: false };
 }
 
 /**
@@ -314,6 +326,15 @@ export function replaceSelectedLocation(book: LocationBook, location: Location):
   };
 }
 
+/**
+ * セットアップ画面を開いた目的の既定。
+ * 目的が無い（地点が 1 つも無くてセットアップ画面に落ちた初回）ときは `change`＝選択中の地点の置き換えとして扱う
+ * （一覧が空なので `replaceSelectedLocation` が 1 件目を足す。目的の既定を .tsx に置かないための関数）
+ */
+export function locationEditMode(editing: LocationEditMode | undefined): LocationEditMode {
+  return editing ?? "change";
+}
+
 /** セットアップ画面での確定を一覧に反映する（足すか置き換えるかは開いた目的で決まる） */
 export function applyLocationEdit(book: LocationBook, mode: LocationEditMode, location: Location): LocationBook {
   return mode === "add" ? addLocation(book, location) : replaceSelectedLocation(book, location);
@@ -339,6 +360,21 @@ export function removeLocation(book: LocationBook, id: string): LocationBook {
   }
   const locations = book.locations.filter((entry) => entry.id !== id);
   return normalizeBook(locations, book.selectedId === id ? undefined : book.selectedId);
+}
+
+/** 地点を削除した後にフォーカスを移す先。selected-location: 選択中の地点のラジオ / settings-heading: 設定の見出し */
+export type RemoveLocationFocus = "selected-location" | "settings-heading";
+
+/**
+ * ［選択中の地点を削除］の後にフォーカスを移す先（削除後の一覧で決める）。
+ * まだ 2 件以上あればボタンは押せるままなので移さない（undefined）。
+ * 1 件になるとボタンが無効になり、押したフォーカスが失われるので、選択中の地点のラジオへ移す（移す地点が無ければ見出しへ）
+ */
+export function focusAfterRemoveLocation(book: LocationBook): RemoveLocationFocus | undefined {
+  if (canRemoveLocation(book)) {
+    return undefined;
+  }
+  return selectedLocation(book) === undefined ? "settings-heading" : "selected-location";
 }
 
 /** 設定画面の地点の一覧に出す 1 行（「地点 1: 35.8709, 139.9256（標高 15m）」） */

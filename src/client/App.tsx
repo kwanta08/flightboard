@@ -29,8 +29,10 @@ import {
 import {
   accessStorage,
   applyLocationEdit,
+  focusAfterRemoveLocation,
   formatLocationHeader,
   initLocations,
+  locationEditMode,
   removeLocation,
   saveLocations,
   selectedLocation,
@@ -38,13 +40,22 @@ import {
   type Location,
   type LocationBook,
   type LocationEditMode,
+  type RemoveLocationFocus,
 } from "./lib/locationStore.ts";
 import { reuseTrack, type SelectedTrack } from "./lib/mapView.ts";
-import { loadSettings, saveSettings, SETTINGS_OPEN_LABEL, type Settings } from "./lib/settingsStore.ts";
+import {
+  loadSettings,
+  saveSettings,
+  SETTINGS_OPEN_LABEL,
+  withKindOption,
+  withRadiusKm,
+  type Settings,
+} from "./lib/settingsStore.ts";
 import { appScreen, focusTargetOnScreenChange, LOCATION_CHANGE_LABEL, type AppScreen } from "./lib/setupFlow.ts";
 
 // App の状態が変わっても、セットアップ画面（地図とドラッグ中のピン）を描き直さない。
-// そのため props（地点・見出しの ref・確定とキャンセル）は同じ値のまま渡す
+// そのため props（地点・開いた目的・見出しの ref・確定とキャンセル）は同じ値のまま渡す
+// （確定のハンドラは一覧と目的を ref から読み、依存に入れない）
 const MemoizedSetupScreen = memo(SetupScreen);
 
 // 一覧の並び替えや「半径を広げる」のフォーカス待ちで App が描き直されても、地図は props が変わったときだけ描き直す。
@@ -57,10 +68,12 @@ const NO_FLIGHTS: readonly Flight[] = [];
 export function App() {
   const [storage] = useState(() => accessStorage(() => window.localStorage));
   // 登録した地点（v2。起動時に v1 から移行する）と設定。どちらも同じ 1 本のキーに保存する
-  const [book, setBook] = useState<LocationBook>(() => initLocations(storage));
+  const [initial] = useState(() => initLocations(storage));
+  const [book, setBook] = useState<LocationBook>(initial.book);
   const [settings, setSettings] = useState<Settings>(() => loadSettings(storage));
-  // 地点か設定の保存に失敗しているか（設定画面に出す。plan「エラー処理について」2）
-  const [saveFailed, setSaveFailed] = useState(false);
+  // 地点か設定の保存に失敗しているか（設定画面に出す。plan「エラー処理について」2）。
+  // 起動時の移行の書き出しの失敗もここから始める（読み取り専用の storage では、何も変えないうちから設定画面に出す）
+  const [saveFailed, setSaveFailed] = useState(initial.saveFailed);
   // セットアップ画面を開いている目的（undefined なら開いていない）と、設定画面を開いているか
   const [editing, setEditing] = useState<LocationEditMode | undefined>(undefined);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -69,6 +82,9 @@ export function App() {
   const settingsHeadingRef = useRef<HTMLHeadingElement>(null);
   const locationChangeRef = useRef<HTMLButtonElement>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const selectedLocationRef = useRef<HTMLInputElement>(null);
+  // ［選択中の地点を削除］で押したボタンが無効になるとき、フォーカスを移す先（移す先は lib の focusAfterRemoveLocation が決める）
+  const [removeFocus, setRemoveFocus] = useState<RemoveLocationFocus | undefined>(undefined);
 
   // 半径と表示する種類は設定（localStorage）に持つ。ツールバーから変えても設定へ書き戻す（二重管理にしない。F-09・F-03）
   const location = selectedLocation(book);
@@ -101,15 +117,24 @@ export function App() {
   const widenButtonRef = useRef<HTMLButtonElement>(null);
   const radiusSelectRef = useRef<HTMLSelectElement>(null);
 
+  // セットアップ画面を開いている間に App が描き直されても MemoizedSetupScreen の props を変えないため、
+  // 確定のハンドラはいまの一覧と目的を ref から読む（依存を applyBook だけに保ち、ドラッグ中のピンを戻さない）
+  const bookRef = useRef(book);
+  const editingRef = useRef(editing);
+  useEffect(() => {
+    bookRef.current = book;
+    editingRef.current = editing;
+  }, [book, editing]);
+
   // 利用者の操作の後、選択（詳細パネル）を保つか消すかは lib の表（selectionAfterUserAction）が決める
   const handleConfirm = useCallback(
     (next: Location) => {
-      // 足すか置き換えるかは lib の applyLocationEdit が開いた目的から決める
-      applyBook(applyLocationEdit(book, editing ?? "change", next));
+      // 足すか置き換えるか（と目的が無いときの既定）は lib の locationEditMode・applyLocationEdit が決める
+      applyBook(applyLocationEdit(bookRef.current, locationEditMode(editingRef.current), next));
       setEditing(undefined);
       setSelectedHex((hex) => selectionAfterUserAction(hex, "location-confirm"));
     },
-    [applyBook, book, editing],
+    [applyBook],
   );
 
   const handleCancel = useCallback(() => {
@@ -118,6 +143,8 @@ export function App() {
   }, []);
 
   const screen = appScreen(location, editing !== undefined, settingsOpen);
+  // セットアップ画面を開いた目的（地点が無くて開いた初回は既定の change）
+  const editMode = locationEditMode(editing);
 
   // 設定の更新間隔は poller に渡して、再読み込みなしで実行中のポーリングに反映する（AC-P2-74）
   const nearby = useNearby(nearbyParamsFor(screen, location, radiusKm, kindOption), settings.intervalMs);
@@ -173,6 +200,19 @@ export function App() {
     }
   }, [screen]);
 
+  // 地点を削除して［選択中の地点を削除］が無効になったら、描き直しの後にフォーカスを移す（移し終えたら待ちを解く）
+  useEffect(() => {
+    if (removeFocus === undefined) {
+      return;
+    }
+    if (removeFocus === "selected-location") {
+      selectedLocationRef.current?.focus();
+    } else {
+      settingsHeadingRef.current?.focus();
+    }
+    setRemoveFocus(undefined);
+  }, [removeFocus]);
+
   // 「半径を広げる」で押したボタンが取得し直す間に消えるので、新しい半径の結果が出たら移す先へ移す（待ちと移す先は lib が決める）
   useEffect(() => {
     const step = advanceWidenFocus(widenPhase, body);
@@ -187,7 +227,7 @@ export function App() {
   }, [widenPhase, body]);
 
   const handleWidenRadius = (next: number) => {
-    applySettings({ ...settings, radiusKm: next });
+    applySettings(withRadiusKm(settings, next));
     setWidenPhase("requested");
     setSelectedHex((hex) => selectionAfterUserAction(hex, "radius"));
   };
@@ -200,12 +240,12 @@ export function App() {
   };
   // ツールバーでの変更も設定に書き戻す（設定画面と同じ値を見る。plan「仮決めした解釈」）
   const handleKindChange = (next: KindOptionValue) => {
-    applySettings({ ...settings, kindOption: next });
+    applySettings(withKindOption(settings, next));
     setWidenPhase((phase) => widenPhaseAfterUserAction(phase, "kind"));
     setSelectedHex((hex) => selectionAfterUserAction(hex, "kind"));
   };
   const handleRadiusChange = (next: number) => {
-    applySettings({ ...settings, radiusKm: next });
+    applySettings(withRadiusKm(settings, next));
     setWidenPhase((phase) => widenPhaseAfterUserAction(phase, "radius"));
     setSelectedHex((hex) => selectionAfterUserAction(hex, "radius"));
   };
@@ -227,8 +267,11 @@ export function App() {
     applyBook(selectLocation(book, id));
     setSelectedHex((hex) => selectionAfterUserAction(hex, "location-confirm"));
   };
+  // 削除で［選択中の地点を削除］が無効になると、押したボタンからフォーカスが失われるので移す先を決めておく
   const handleRemoveLocation = (id: string) => {
-    applyBook(removeLocation(book, id));
+    const next = removeLocation(book, id);
+    applyBook(next);
+    setRemoveFocus(focusAfterRemoveLocation(next));
     setSelectedHex((hex) => selectionAfterUserAction(hex, "location-confirm"));
   };
   // 一覧での選択と地図のアイコンでの選択は同じハンドラを通す。地図の memo を保つため参照は変えない
@@ -266,6 +309,7 @@ export function App() {
       {screen === "setup" ? (
         <MemoizedSetupScreen
           current={location}
+          mode={editMode}
           headingRef={setupHeadingRef}
           onConfirm={handleConfirm}
           onCancel={handleCancel}
@@ -276,6 +320,7 @@ export function App() {
           settings={settings}
           saveFailed={saveFailed}
           headingRef={settingsHeadingRef}
+          selectedLocationRef={selectedLocationRef}
           onSelectLocation={handleSelectLocation}
           onAddLocation={() => openSetup("add")}
           onEditLocation={() => openSetup("change")}
