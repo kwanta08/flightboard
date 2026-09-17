@@ -61,8 +61,12 @@ export function destinationPoint(from: LatLon, bearingDeg: number, distanceKm: n
  *
  * 測るのは**線分ではなく大円**なので、from と to の外側へ延ばした延長線上の点も 0km になる
  * （滑走路の中心線からのずれを、進入側でも出発側でも同じ式で測るため）。
- * from と to が同じ点のときは大円が定まらないので、**point からその点までの距離**を返す
- * （0 を返すと「中心線に乗っている」と読めてしまうので、遠い側＝判別しない側に倒す）。
+ *
+ * **前提**: from と to は別の点で、互いに対蹠点でないこと（どちらの場合も大円が一意に定まらない）。
+ * 同一点のときだけ特別扱いし、**point から from までの距離**を返す。これは
+ * 「from を通る**どの**大円に対する横ずれよりも大きい上界」であって、横ずれそのものではない
+ * （0 を返すと「中心線に乗っている」と読めてしまうため、大きい側に倒す。
+ * ただし最小比較で必ず負ける保証はない — from から近い点なら上界も小さいので勝ちうる）。
  */
 export function crossTrackKm(point: LatLon, from: LatLon, to: LatLon): number {
   if (from.lat === to.lat && from.lon === to.lon) {

@@ -166,8 +166,10 @@ describe("crossTrackKm", () => {
   });
 
   it("from と to が同じ点なら、その点までの距離を返す", () => {
-    // 大円が定まらないので「定まる唯一の量」を返す。0 を返すと「中心線に乗っている」と
-    // 読めてしまい、横ずれが最小の端として誤って選ばれうるので、遠い側＝判別しない側に倒す。
+    // 大円が定まらないので「定まる唯一の量」＝ point から from までの距離を返す。これは
+    // 「from を通るどの大円に対する横ずれよりも大きい上界」であって横ずれそのものではない
+    // （0 を返すと「中心線に乗っている」と読めてしまうため大きい側に倒す。
+    // ただし最小比較で必ず負ける保証はない — from に近い点なら上界も小さいので勝ちうる）。
     const point = { lat: 35.6, lon: 139.9 };
     expect(crossTrackKm(point, from, { ...from })).toBeCloseTo(haversineKm(point, from), 9);
     expect(crossTrackKm(point, from, { ...from })).toBeGreaterThan(10);
