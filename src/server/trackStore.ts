@@ -54,8 +54,12 @@ type StoredPoint = { lat: number; lon: number; altitudeFt: number | null; atMs: 
 
 type Entry = { flight: Flight; fetchedAt: number; points: StoredPoint[] };
 
-/** `points()` が保持していない hex に返す空の航跡（毎回作らない） */
-const NO_POINTS: readonly LatLon[] = [];
+/**
+ * `points()` が保持していない hex に返す空の航跡（毎回作らない）。
+ * 全呼び出しで共有するので**凍結する**（型は `readonly` だが、キャスト 1 つで `push` されると
+ * 以後すべての未知 hex がその点を持ってしまう。strict mode では即例外になる）
+ */
+const NO_POINTS: readonly LatLon[] = Object.freeze<LatLon[]>([]);
 
 export function createTrackStore(options: TrackStoreOptions): TrackStore {
   const { now } = options;

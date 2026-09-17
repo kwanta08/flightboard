@@ -177,7 +177,11 @@ export function createAirportOpsSource(options: AirportOpsSourceOptions): Airpor
   /**
    * route の裏付けが幾何と食い違って滑走路が外れたか（AC-P2-16 が効いたか）。
    * route を外した推定では滑走路が決まるのに、route を付けると決まらない ＝ route が幾何を否定したということ。
-   * route が無い・route を外しても滑走路が決まらない（幾何が unknown・進行方向の欠け）なら false
+   * route が無い・route を外しても滑走路が決まらない（幾何が unknown・進行方向の欠け）なら false。
+   *
+   * `track` はこの真偽を変えない（航跡が効くのは並行の組の L/C/R だけで、候補の有無やフェーズ判定には
+   * 影響しないため、`decideRunway` が定義を返すかどうかは航跡の有無で変わらない）。それでも渡すのは、
+   * `toEntry` と**同じ入力**で判定するため（片方だけ航跡を見る、という食い違いを作らない）
    */
   function routeContradictsGeometry(routed: Flight, track: readonly LatLon[] | undefined): boolean {
     if (routed.route === undefined) return false;

@@ -331,9 +331,11 @@ describe("createTrackStore: points（推定に渡す座標）", () => {
   const coordinates = (points: readonly { lat: number; lon: number }[]) =>
     points.map(({ lat, lon }) => ({ lat, lon }));
 
-  it("保持していない hex は空配列", () => {
+  it("保持していない hex は凍結した空配列（共有するので書き換えられない）", () => {
     const t = setup();
     expect(t.store.points("aaa111")).toEqual([]);
+    // 全呼び出しで同じ配列を使い回すので、誤って積まれないよう凍結してある
+    expect(Object.isFrozen(t.store.points("aaa111"))).toBe(true);
   });
 
   it("記録した点を古い順に返し、座標は get と同じ", () => {

@@ -611,9 +611,36 @@ describe("createAirportOpsSource: 集計に入れるのは滑走路まで決ま�
     expect(t.source.current()).toEqual([]);
   });
 
+  it("route が幾何を否定した機体は、L/R が未判別でも取り消す", () => {
+    // 上のテストとの違いは「route が幾何と食い違う」ことだけ。取り消しの判定（`routeContradictsGeometry`）は
+    // **route を外した推定**で見るので、ident の実在の判定を `decideRunway` に畳み込むと
+    // route を外した側まで undefined になり、取り消しが効かなくなる（10 分間、実態と違う運用方向が残る）
+    const end = endOf("RJAA", "34R");
+    const points: Record<string, readonly LatLon[]> = { aaa111: [justAirborne(end)] };
+    const routes: Record<string, RouteInfo> = {};
+    const tracks = fakeTracks(points);
+    const t = setup({ tracks, getRoute: (callsign) => routes[callsign] });
+
+    t.source.record([departingFlight("aaa111", end)], T0);
+    expect(departingRunwaysOf(t.source)).toEqual([["RJAA", ["34R"], 1]]);
+
+    // 航跡が落ちて L/R が未判別になり、同時に「成田着」の route が届いた観測。
+    // 幾何は「34R を離陸」と言っているので route がそれを否定しており、記録は取り消す
+    delete points.aaa111;
+    routes.ANA245 = ARRIVES_NARITA;
+    t.advance(6000);
+    t.source.record([departingFlight("aaa111", end)], t.now);
+
+    expect(t.source.current()).toEqual([]);
+    // 取り消しを通る機体でも、航跡を引くのは 1 回の record につき 1 回だけ
+    // （`toEntry` と `retract` には同じ値を渡す。AC-P3-11）
+    expect(tracks.pointsLookups).toEqual(["aaa111", "aaa111"]);
+  });
+
   it("集計に出る滑走路はすべて、その空港の滑走路端に実在する ident", () => {
     const narita34R = endOf("RJAA", "34R");
-    const t = setup({ tracks: fakeTracks({ ccc333: [justAirborne(narita34R)] }) });
+    const tracks = fakeTracks({ ccc333: [justAirborne(narita34R)] });
+    const t = setup({ tracks });
     t.source.record(
       [
         arrivingFlight("aaa111", endOf("RJTT", "22")), // 単独の組（そのまま "22"）
@@ -637,5 +664,7 @@ describe("createAirportOpsSource: 集計に入れるのは滑走路まで決ま�
       ["RJTT", ["22", "34L"], [], 2],
       ["RJAA", [], ["34R"], 1],
     ]);
+    // 航跡は 1 機につき 1 回だけ引き、記録の判定と取り消しに同じ値を使う（AC-P3-11）
+    expect(tracks.pointsLookups).toEqual(["aaa111", "bbb222", "ccc333", "ddd444"]);
   });
 });

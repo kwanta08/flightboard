@@ -1584,4 +1584,22 @@ describe("GET /api/flights/:hex: 推定に航跡を渡す（AC-P3-05）", () => 
     const lateHeld = await late.get("/api/flights/abc123");
     expect((lateHeld.body.flight as Flight).estimate?.runway).toBe("16");
   });
+
+  it("enrichment があるとき（本番で通る経路）も航跡が効く", async () => {
+    // `composeApp` は常に `enrichment` と `photos` を渡すので、本番で通るのは
+    // ルート・機体情報を待ってから推定を組み立てる方の経路（早期 return ではない方）。
+    // 上のテストは enrichment を渡さないためそちらを通らないので、対照としてここで固定する
+    const t = setup(departureSequence(), (now) => ({
+      tracks: createTrackStore({ now }),
+      enrichment: fakeEnrichment(),
+    }));
+
+    await t.get(NEARBY); // 離陸直後（4.5km）
+    t.advance(5000);
+    await t.get(NEARBY); // 8km
+
+    const { body } = await t.get("/api/flights/abc123");
+    expect((body.flight as Flight).estimate?.runway).toBe("16R");
+    expect((body.flight as Flight).estimate?.evidence).toContain("離陸直後 中心線から 0.0km");
+  });
 });
