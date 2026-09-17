@@ -1,6 +1,6 @@
 // 一覧・詳細で使う表示用の文字列（AC-B4・AC-B13）。高度と対地速度は設定の単位で出す（F-09・AC-P2-72）。
 // 値が無い（null / undefined）・非有限（NaN・±Infinity）なら DASH を返す。
-import { VERTICAL_RATE_THRESHOLD_FPM } from "../../shared/estimate.ts";
+import { formatFpm, VERTICAL_RATE_THRESHOLD_FPM } from "../../shared/estimate.ts";
 import { bearingToJa16, FT_TO_M } from "../../shared/geo.ts";
 import type { Airport } from "../../shared/types.ts";
 
@@ -122,23 +122,19 @@ export function formatDistanceKm(km: MaybeNumber): string {
 /**
  * 昇降率（fpm）を **fpm のまま**整数に。正なら "+" を付ける（1500 → "+1500fpm"、-704 → "-704fpm"、0 → "0fpm"）。
  * **単位は取らない**（昇降率は F-09・Q19 の単位設定の対象外。切り替えるのは高度と対地速度だけ）。
- * 書式は根拠（evidence）の行（`src/server/estimate/estimate.ts` の `verticalRateEvidence`。
- * 「降下中 -704fpm」「上昇中 +1500fpm」「水平飛行 0fpm」）に合わせる（仕様 Q15）:
- * - 丸めは同じ `Math.round(fpm)`。詳細パネルで同じ機体の根拠と昇降率が必ず同じ数字になる
- * - -0 に丸まる値は 0（evidence の `rounded === 0 ? 0 : rounded` と同じ）
- * - 桁区切りはしない（evidence が「+1500fpm」なので `formatAltitudeFt` の「1,500ft」には揃えない）
- * - 符号は値そのものから付ける。evidence は「上昇中」「降下中」の語が向きを伝えるので ±200fpm 以内では
- *   符号を省くが、この行には語が無いので正なら必ず "+" を出す（正負の見分けが値だけに掛かっている）
+ * 数値部分は根拠（evidence）の行と同じ `formatFpm`（`src/shared/estimate.ts`）を通す。
+ * 丸め（`Math.round`）・-0 の扱い・桁区切りをしないことはそちらが持つので、詳細パネルで
+ * 根拠の「降下中 -704fpm」とこの行の「-704fpm」は必ず同じ数字になる（仕様 Q15）。
+ * **符号だけはここで決める**: evidence は「上昇中」「降下中」の語が向きを伝えるので ±200fpm 以内では
+ *   符号を省く（「水平飛行 150fpm」）が、この行には語が無いので正なら必ず "+" を出す
+ *   （+150fpm と -150fpm の見分けが値の符号だけに掛かっている）
  */
 export function formatVerticalRateFpm(fpm: MaybeNumber): string {
   if (!isFiniteNumber(fpm)) {
     return DASH;
   }
-  const rounded = Math.round(fpm);
-  if (rounded > 0) {
-    return `+${rounded}fpm`;
-  }
-  return `${normalizeZero(rounded)}fpm`;
+  const text = formatFpm(fpm);
+  return Math.round(fpm) > 0 ? `+${text}` : text;
 }
 
 export type VerticalTrend = "climb" | "descend" | "level";

@@ -344,6 +344,26 @@ describe("buildRows: 経路の推定バッジ（AC-P2-50）", () => {
     expect(row.estimateBadge?.text).toBe("HND RWY22 進入 確度:高");
   });
 
+  // 全体差分レビュー MAJOR-1: 並行滑走路で L/R が決まらないと runway に数字だけ（"16"）が入る（AC-P3-06）。
+  // 羽田に RWY16 は実在しない。これは「16 の方向・L/R は判別できず」の意味で、**意図した見え方**
+  // （plan §「数字だけの `runway` の見え方」・spec §10.2 (c)）。将来変えるならそこの判断から見直すこと。
+  // 一覧の行からは判別できていないことが分からない（詳細の根拠の「L/R は判別できず」でだけ分かる）
+  it("L/R が判別できない推定でも行にバッジが載る（「HND RWY16 出発 確度:中」）", () => {
+    const flight = makeFlight({
+      hex: "p5",
+      estimate: {
+        phase: "departure",
+        airport: { icao: "RJTT", name: "羽田" },
+        runway: "16",
+        confidence: 0.6,
+        evidence: ["方位のズレ 0.0°", "滑走路まで 8.0km", "L/R は判別できず", "上昇中 +1500fpm"],
+      },
+    });
+    const row = onlyRow(buildRows([flight], NAGAREYAMA));
+    expect(row.estimateBadge?.text).toBe("HND RWY16 出発 確度:中");
+    expect(row.estimateBadge?.confidence).toBe("中");
+  });
+
   it("estimate の無い機体の行には載らない", () => {
     expect(onlyRow(buildRows([makeFlight({ hex: "p2" })], NAGAREYAMA)).estimateBadge).toBeUndefined();
   });

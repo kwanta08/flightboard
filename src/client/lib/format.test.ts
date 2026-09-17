@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { VERTICAL_RATE_THRESHOLD_FPM } from "../../shared/estimate.ts";
 import {
   airportShortLabel,
   DASH,
@@ -44,7 +45,7 @@ describe("formatAltitudeFt / formatAltitudeM（ft → m、10m 単位に丸めて
     expect(formatAltitudeM(meters)).toBe(expected);
   });
 
-  it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY])("%s → 「—」", (value) => {
+  it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("%s → 「—」", (value) => {
     expect(formatAltitudeFt(value)).toBe("—");
     expect(formatAltitudeM(value)).toBe("—");
   });
@@ -64,7 +65,7 @@ describe("formatSpeedKt（kt → km/h の整数）", () => {
     expect(formatSpeedKt(knots)).toBe(expected);
   });
 
-  it.each([null, undefined, Number.NaN])("%s → 「—」", (value) => {
+  it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("%s → 「—」", (value) => {
     expect(formatSpeedKt(value)).toBe("—");
   });
 
@@ -104,7 +105,7 @@ describe("表示の単位（F-09・仕様 Q6・AC-P2-72）", () => {
       expect(formatAltitudeFt(6600)).toBe("2,010m");
     });
 
-    it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY])("値が無ければ単位に関わらず「—」（%s）", (value) => {
+    it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("値が無ければ単位に関わらず「—」（%s）", (value) => {
       expect(formatAltitudeFt(value, "ft")).toBe("—");
       expect(formatAltitudeFt(value)).toBe("—");
       expect(formatAltitudeM(value)).toBe("—");
@@ -129,7 +130,7 @@ describe("表示の単位（F-09・仕様 Q6・AC-P2-72）", () => {
       expect(formatSpeedKt(250)).toBe("463km/h");
     });
 
-    it.each([null, undefined, Number.NaN])("値が無ければ単位に関わらず「—」（%s）", (value) => {
+    it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("値が無ければ単位に関わらず「—」（%s）", (value) => {
       expect(formatSpeedKt(value, "kt")).toBe("—");
     });
 
@@ -214,6 +215,12 @@ describe("formatVerticalRateFpm（fpm のまま整数、正は + 付き）", () 
     [-704, "-704fpm"], // evidence の「降下中 -704fpm」と同じ
     [0, "0fpm"], // evidence の「水平飛行 0fpm」と同じ
     [-1000, "-1000fpm"],
+    // (0, 200] は evidence と符号の扱いが**意図的に**違う（サーバーは「水平飛行 150fpm」と符号を出さない）。
+    // 詳細の「昇降率」の行には向きを表す語が無く、+150 と -150 の見分けが符号だけに掛かっているため、
+    // クライアントは正なら必ず "+" を付ける。evidence に合わせて "+" を落とさないこと
+    [150, "+150fpm"],
+    [VERTICAL_RATE_THRESHOLD_FPM, "+200fpm"], // しきい値ちょうど（evidence は「水平飛行 200fpm」）
+    [-150, "-150fpm"],
     [1000.4, "+1000fpm"], // 丸めは evidence と同じ Math.round
     [-704.5, "-704fpm"], // Math.round は .5 を +∞ 方向へ。evidence も同じ関数なので数字がずれない
   ])("%s fpm → %s", (fpm, expected) => {
@@ -224,7 +231,7 @@ describe("formatVerticalRateFpm（fpm のまま整数、正は + 付き）", () 
     expect(formatVerticalRateFpm(2400)).toBe("+2400fpm");
   });
 
-  it.each([null, undefined, Number.NaN])("%s → 「—」", (value) => {
+  it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("%s → 「—」", (value) => {
     expect(formatVerticalRateFpm(value)).toBe("—");
   });
 

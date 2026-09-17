@@ -605,7 +605,7 @@ describe("buildDetailView: 「経路」の区分（AC-P2-53・F-05・S-03）", (
   const AIRPORT_OPS: AirportOps[] = [
     { icao: "RJTT", landingRunways: ["22", "23"], departingRunways: ["16L"], configLabel: "南風運用", basedOn: 6, updatedAt: "2026-09-16T00:00:00.000Z" },
   ];
-  const EVIDENCE = ["方位のズレ 0.3°", "滑走路まで 10.7km", "降下中 −704fpm"];
+  const EVIDENCE = ["方位のズレ 0.3°", "滑走路まで 10.7km", "降下中 -704fpm"];
   const ESTIMATED_FLIGHT = makeFlight({
     hex: "86e7a0",
     callsign: "JAL38",
@@ -653,6 +653,37 @@ describe("buildDetailView: 「経路」の区分（AC-P2-53・F-05・S-03）", (
     const withoutOps = buildDetailView(makeDetail(ESTIMATED_FLIGHT), NAGAREYAMA);
     expect(valueOf(withoutOps, "経路", "運用方向")).toBe("判定中");
     expect(valueOf(withoutOps, "経路", "滑走路")).toBe("RWY22");
+  });
+});
+
+// 全体差分レビュー MAJOR-1: 並行滑走路で L/R が決まらないと runway に数字だけ（"16"）が入る（AC-P3-06）。
+// 羽田に RWY16 は実在しない。これは「16 の方向・L/R は判別できず」の意味で、**意図した見え方**
+// （plan §「数字だけの `runway` の見え方」・spec §10.2 (c)）。将来変えるならそこの判断から見直すこと
+describe("buildDetailView: L/R が判別できない推定（数字だけの runway）の見え方", () => {
+  // src/server/estimate/estimate.ts が実際に返す値（estimate.test.ts:168-183 が固定している）
+  const UNDECIDED = makeFlight({
+    hex: "86e7a0",
+    callsign: "ANA245",
+    estimate: {
+      phase: "departure",
+      airport: { icao: "RJTT", name: "羽田" },
+      runway: "16",
+      confidence: 0.6,
+      evidence: ["方位のズレ 0.0°", "滑走路まで 8.0km", "L/R は判別できず", "上昇中 +1500fpm"],
+    },
+  });
+  const view = buildDetailView(makeDetail(UNDECIDED), NAGAREYAMA);
+
+  it("「滑走路」欄は数字だけをそのまま前置した「RWY16」（実在の識別子ではない）", () => {
+    expect(valueOf(view, "経路", "滑走路")).toBe("RWY16");
+  });
+
+  it("「確度」欄は「中」（AC-P3-07 の上限。数字だけでも確度ラベルは出す）", () => {
+    expect(valueOf(view, "経路", "確度")).toBe("中");
+  });
+
+  it("判別できていないことは根拠の「L/R は判別できず」で示す（一覧のバッジからは分からない）", () => {
+    expect(view.sections.at(-1)?.notes?.lines).toContain("L/R は判別できず");
   });
 });
 

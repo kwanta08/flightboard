@@ -62,6 +62,24 @@ describe("buildEstimateBadge: 生成規則表のバッジ文言（AC-P2-50）", 
     );
   });
 
+  // 全体差分レビュー MAJOR-1: 並行滑走路で L/R が決まらないと runway に数字だけ（"16"）が入る（AC-P3-06）。
+  // 羽田に RWY16 は実在しない。これは「16 の方向・L/R は判別できず」の意味で、**意図した見え方**
+  // （plan §「数字だけの `runway` の見え方」）。将来変えるならそこの判断から見直すこと
+  it("L/R が判別できない出発: 数字だけの runway をそのまま前置する（「HND RWY16 出発 確度:中」）", () => {
+    expect(badgeTextOf({ phase: "departure", airport: HND, runway: "16", confidence: 0.6, evidence: [] })).toBe(
+      "HND RWY16 出発 確度:中",
+    );
+  });
+
+  // 同上（plan §「数字だけの `runway` の見え方」）。数字だけでも「滑走路が決まった」扱いなので確度ラベルが出る。
+  // 判別できていないことは詳細の根拠の「L/R は判別できず」でしか分からない（承知のうえの代償）
+  it("数字だけの runway でも確度ラベルを出す（滑走路が無い進入・出発とは違う扱い）", () => {
+    const undecided = badgeOf(makeFlight({ phase: "departure", airport: HND, runway: "16", confidence: 0.6, evidence: [] }));
+    expect(undecided?.confidence).toBe("中");
+    const noRunway = badgeOf(makeFlight({ phase: "departure", airport: HND, confidence: 0.6, evidence: [] }));
+    expect(noRunway?.confidence).toBeUndefined();
+  });
+
   it("滑走路が決まらない進入: 「HND 進入」（確度ラベルなし）", () => {
     expect(badgeTextOf({ phase: "arrival", airport: HND, confidence: 0.5, evidence: [] })).toBe("HND 進入");
   });
@@ -314,7 +332,7 @@ describe("buildEstimateSection: 詳細の「経路」（AC-P2-53・S-03）", () 
   const OPS: AirportOps[] = [
     { icao: "RJTT", landingRunways: ["22", "23"], departingRunways: ["16L"], configLabel: "南風運用", basedOn: 5, updatedAt: "2026-09-16T00:00:00.000Z" },
   ];
-  const EVIDENCE = ["方位のズレ 0.3°", "滑走路まで 10.7km", "降下中 −704fpm"];
+  const EVIDENCE = ["方位のズレ 0.3°", "滑走路まで 10.7km", "降下中 -704fpm"];
 
   function itemsOf(estimate: Flight["estimate"], airportOps?: AirportOps[]) {
     const section = buildEstimateSection(estimate, airportOps);

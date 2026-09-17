@@ -3,6 +3,7 @@
 // 入力は単発の Flight と（省略可能な）その機体の航跡だけで、I/O・グローバル状態は使わない。
 // 航跡は並行滑走路の出発で L/C/R を判別するときだけ使う（AC-P3-05）。
 import { airportDisplayName } from "../../shared/airports.ts";
+import { formatFpm } from "../../shared/estimate.ts";
 import { type LatLon, haversineKm } from "../../shared/geo.ts";
 import type { Flight } from "../../shared/types.ts";
 import { TARGET_AIRPORTS, type TargetAirport } from "../data/airports.ts";
@@ -262,16 +263,21 @@ function buildEvidence(args: {
   return evidence;
 }
 
-/** 「降下中 -704fpm」「上昇中 +1500fpm」「水平飛行 0fpm」 */
+/**
+ * 「降下中 -704fpm」「上昇中 +1500fpm」「水平飛行 0fpm」。
+ * 数値部分は `src/shared/estimate.ts` の `formatFpm`（丸め・-0・接尾辞。符号は付けない）。
+ * 詳細パネルの「昇降率」（`src/client/lib/format.ts` の `formatVerticalRateFpm`）も同じ関数を通すので、
+ * 同じ機体の根拠とこの行の数字が食い違わない。向きは語が伝えるので、符号は上昇のときだけ足す
+ */
 function verticalRateEvidence(fpm: number): string {
-  const rounded = Math.round(fpm);
+  const value = formatFpm(fpm);
   if (fpm > VERTICAL_RATE_THRESHOLD_FPM) {
-    return `上昇中 +${rounded}fpm`;
+    return `上昇中 +${value}`;
   }
   if (fpm < -VERTICAL_RATE_THRESHOLD_FPM) {
-    return `降下中 ${rounded}fpm`;
+    return `降下中 ${value}`;
   }
-  return `水平飛行 ${rounded === 0 ? 0 : rounded}fpm`;
+  return `水平飛行 ${value}`;
 }
 
 /** 表示用の空港名（「羽田」）。evidence の中はこの呼び名で統一する。表に無い ICAO はそのまま出す（推測で埋めない） */
