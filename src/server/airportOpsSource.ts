@@ -4,6 +4,7 @@
 // 最終取得から TTL（既定 30 秒）を超えた空港が 1 つだけ非同期に取得される（応答は待たせない。AC-P2-61）。
 // こうすると停止処理・`unref` が要らず、`server.ts` の `close()` も変えずに済む。
 // 位置の取得元は composeApp が作ったフォールバック提供元と**同じインスタンス**を共有する（429 の休止も共有する）。
+import type { LatLon } from "../shared/geo.ts";
 import type { AirportOps, Flight } from "../shared/types.ts";
 import { attachRoutes } from "./adsbdb/attachRoutes.ts";
 import type { RouteInfo } from "./adsbdb/enrichment.ts";
@@ -52,7 +53,8 @@ export type AirportOpsSourceOptions = {
   radiusNm?: number;
   /**
    * 航跡の保持。あれば空港取得で得た機体も `record` する（spec §7.3 が空港取得の用途に「航跡の蓄積」を含むため）。
-   * これで観測半径の外にいる機体でも `/api/flights/:hex` が引ける。例外はログに出して握りつぶす
+   * これで観測半径の外にいる機体でも `/api/flights/:hex` が引ける。例外はログに出して握りつぶす。
+   * 集計の推定にも各機体の航跡（`points`）を渡すので、並行滑走路の出発も L/C/R まで決まる（AC-P3-05 / 11）
    */
   tracks?: AppTracks;
   /**
@@ -84,6 +86,16 @@ export interface AirportOpsSource {
   refresh(): void;
 }
 
+/**
+ * その空港の滑走路端に実在する指示子か（AC-P3-11。「滑走路まで決まった」の定義）。
+ * L/R が未判別のときの推定は指示子の数字だけ（`"16"`）になり、これは `ends` に無いので false になる。
+ * **文字列の形では判定できない**（`"22"` は決まった値、`"16"` は決まっていない印で、形は同じ）。
+ * 実在しない値を集計に入れると `runwayConfigLabel` の対応表が引けず、最頻の計算も壊れる
+ */
+function isExistingRunway(icao: string, runway: string, ends: readonly RunwayEnd[]): boolean {
+  return ends.some((end) => end.icao === icao && end.ident === runway);
+}
+
 export function createAirportOpsSource(options: AirportOpsSourceOptions): AirportOpsSource {
   const { positions, now, tracks, getRoute } = options;
   const airports = options.airports ?? TARGET_AIRPORTS;
@@ -111,17 +123,31 @@ export function createAirportOpsSource(options: AirportOpsSourceOptions): Airpor
     }
   }
 
+  /**
+   * 取得した機体を集計に流す。各機体で航跡を **1 回だけ**引き、記録の判定と取り消しに同じ値を使う。
+   * 判定は 3 分岐（AC-P3-11）:
+   *
+   * 1. 滑走路が決まらない（`toEntry` が undefined）→ `retract`（＝ route が幾何を否定したときだけ消える）
+   * 2. 決まったが `runway` がその空港の滑走路端に**実在しない**（L/R 未判別の `"16"`）→ 記録も取り消しもしない
+   * 3. 決まっていて実在する → 記録する
+   *
+   * 2 を `toEntry` の中（＝ 1 と同じ undefined）に畳むと、L/R が未判別なだけの機体で `retract` が走り、
+   * route 付きで正しく記録していた 1 件を消してしまう
+   */
   function record(flights: readonly Flight[], fetchedAt: number): void {
     for (const flight of flights) {
       if (flight.kind !== "passenger" && flight.kind !== "cargo") continue;
       // 比較を否定形で書き、NaN も除外する（60 秒超の古い位置を集計に入れない）
       if (!(flight.seenPosSec <= MAX_SEEN_POS_SEC)) continue;
       const routed = withCachedRoute(flight);
-      const entry = toEntry(routed, fetchedAt);
+      const track = tracks?.points(flight.hex);
+      const entry = toEntry(routed, fetchedAt, track);
       if (entry === undefined) {
-        retract(routed, fetchedAt);
+        retract(routed, fetchedAt, track);
         continue;
       }
+      // 数字だけの推定（L/R 未判別）は運用方向の集計に入れない。取り消しもしない（AC-P3-11 の分岐 2）
+      if (!isExistingRunway(entry.icao, entry.runway, ends)) continue;
       // 古い取得の結果で新しい記録を上書きしない
       const previous = entries.get(entry.hex);
       if (previous !== undefined && previous.at > entry.at) continue;
@@ -140,11 +166,11 @@ export function createAirportOpsSource(options: AirportOpsSourceOptions): Airpor
    * 着陸して feed から消えた機体を 10 分数える設計（AC-P2-35）を保つ。
    * 古い取得の結果で新しい記録を消さないよう、記録より後の観測のときだけ消す
    */
-  function retract(routed: Flight, fetchedAt: number): void {
+  function retract(routed: Flight, fetchedAt: number, track: readonly LatLon[] | undefined): void {
     const hex = routed.hex.toLowerCase();
     const previous = entries.get(hex);
     if (previous === undefined || previous.at > fetchedAt) return;
-    if (!routeContradictsGeometry(routed)) return;
+    if (!routeContradictsGeometry(routed, track)) return;
     entries.delete(hex);
   }
 
@@ -153,10 +179,10 @@ export function createAirportOpsSource(options: AirportOpsSourceOptions): Airpor
    * route を外した推定では滑走路が決まるのに、route を付けると決まらない ＝ route が幾何を否定したということ。
    * route が無い・route を外しても滑走路が決まらない（幾何が unknown・進行方向の欠け）なら false
    */
-  function routeContradictsGeometry(routed: Flight): boolean {
+  function routeContradictsGeometry(routed: Flight, track: readonly LatLon[] | undefined): boolean {
     if (routed.route === undefined) return false;
     const { route: _route, ...withoutRoute } = routed;
-    return decideRunway(withoutRoute) !== undefined;
+    return decideRunway(withoutRoute, track) !== undefined;
   }
 
   /**
@@ -177,14 +203,22 @@ export function createAirportOpsSource(options: AirportOpsSourceOptions): Airpor
    * route がキャッシュに無い機体（空港取得で見つけた機体に多い）は、従来どおり幾何だけで決まる。
    * 流し込む範囲は plan の指定どおり（`selectFlights` の前の全機体＝観測半径の外の機体も数える）。
    */
-  function toEntry(flight: Flight, at: number): AirportOpsEntry | undefined {
-    const decided = decideRunway(flight);
+  function toEntry(flight: Flight, at: number, track: readonly LatLon[] | undefined): AirportOpsEntry | undefined {
+    const decided = decideRunway(flight, track);
     return decided === undefined ? undefined : { hex: flight.hex.toLowerCase(), ...decided, at };
   }
 
-  /** その機体の推定が「滑走路まで決まった進入・出発」なら、その空港・フェーズ・滑走路。それ以外は undefined */
-  function decideRunway(flight: Flight): Pick<AirportOpsEntry, "icao" | "phase" | "runway"> | undefined {
-    const estimate = buildEstimate(flight, ends, airports);
+  /**
+   * その機体の推定が「滑走路まで決まった進入・出発」なら、その空港・フェーズ・滑走路。それ以外は undefined。
+   * **素の判定のままにする**（L/R が未判別の `"16"` もここでは undefined にしない）。ident の実在の判定を
+   * ここに混ぜると、「route が幾何を否定した」と「L/R が未判別」が同じ undefined に潰れ、
+   * `routeContradictsGeometry` の取り消しが効かなくなる（AC-P3-11）
+   */
+  function decideRunway(
+    flight: Flight,
+    track: readonly LatLon[] | undefined,
+  ): Pick<AirportOpsEntry, "icao" | "phase" | "runway"> | undefined {
+    const estimate = buildEstimate(flight, ends, airports, track);
     if (estimate === undefined) return undefined;
     if (estimate.phase !== "arrival" && estimate.phase !== "departure") return undefined;
     const { runway, airport } = estimate;

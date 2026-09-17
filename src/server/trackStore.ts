@@ -1,5 +1,6 @@
 // 機体ごとの航跡と最新の機体情報のメモリ上の保持（AC-A15）。`/api/flights/:hex`（AC-A16）が読む。
 // 位置をキャッシュミスで取得するたびに `record` を呼ぶ。旅客機・貨物機（`passenger`/`cargo`）だけを記録する。
+import type { LatLon } from "../shared/geo.ts";
 import type { Flight, TrackPoint } from "../shared/types.ts";
 
 export type TrackStoreOptions = {
@@ -29,6 +30,18 @@ export interface TrackStore {
   record(flights: readonly Flight[], fetchedAt: number): void;
   /** 期限切れを掃除してから返す。hex の大文字・小文字は区別しない。戻り値は内部状態のコピー */
   get(hex: string): TrackedFlight | undefined;
+  /**
+   * 保持している航跡の座標だけを**古い順**で返す（推定の入力。AC-P3-05）。保持していない hex は `[]`。
+   * hex の大文字・小文字は `get` と同じく区別しない。
+   *
+   * **内部の配列をそのまま返し（複製しない）、`prune` も呼ばない**。推定は座標しか使わないので、
+   * `get` の複製・ISO 変換・保持機体の全走査は `/api/nearby` の 20〜70 機ぶんではほぼ捨てる仕事になるため
+   * （plan 20260917-parallel-runway-and-fpm §「仮決めした解釈」）。掃除を省いても影響しないのは、
+   * `/api/nearby` がキャッシュミスなら同じ処理の中で `record`（＝ `prune`）の直後に呼び、キャッシュヒットでも
+   * 位置キャッシュの TTL（5 秒）以内に `record` が走っているので、掃除の遅れが 10 分の保持窓に対して
+   * 無視できるから。**戻り値を書き換えないこと**（内部状態を壊す）
+   */
+  points(hex: string): readonly LatLon[];
   /** 期限切れを掃除してから、保持している機体数を返す */
   size(): number;
 }
@@ -40,6 +53,9 @@ export const DEFAULT_TRACK_MAX_POINTS = 60;
 type StoredPoint = { lat: number; lon: number; altitudeFt: number | null; atMs: number };
 
 type Entry = { flight: Flight; fetchedAt: number; points: StoredPoint[] };
+
+/** `points()` が保持していない hex に返す空の航跡（毎回作らない） */
+const NO_POINTS: readonly LatLon[] = [];
 
 export function createTrackStore(options: TrackStoreOptions): TrackStore {
   const { now } = options;
@@ -111,6 +127,11 @@ export function createTrackStore(options: TrackStoreOptions): TrackStore {
           at: new Date(atMs).toISOString(),
         })),
       };
+    },
+
+    points(hex) {
+      // 複製も prune もしない（口の JSDoc の理由）。未知の hex では同じ空配列を使い回す
+      return entries.get(hex.toLowerCase())?.points ?? NO_POINTS;
     },
 
     size() {

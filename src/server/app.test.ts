@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EARTH_RADIUS_KM, destinationPoint, haversineKm } from "../shared/geo.ts";
+import type { LatLon } from "../shared/geo.ts";
 import type { Flight, TrackPoint } from "../shared/types.ts";
 import type { AdsbdbAircraft, AdsbdbClient } from "./adsbdb/client.ts";
 import { createEnrichment } from "./adsbdb/enrichment.ts";
@@ -510,12 +511,16 @@ function fakeEnrichment(routes: Record<string, RouteInfo> = {}) {
   return fake;
 }
 
-/** 呼び出しを記録する偽の tracks。`get` は `entries` から返す。`recordImpl` は途中で差し替えられる */
+/**
+ * 呼び出しを記録する偽の tracks。`get`・`points` は `entries` から返す。`recordImpl` は途中で差し替えられる。
+ * `points` は保持している点をそのまま返す（`TrackPoint` は `lat`/`lon` を持つので推定にそのまま渡せる）
+ */
 function fakeTracks(entries: Record<string, TrackedFlight> = {}) {
   const fake = {
     entries: new Map<string, TrackedFlight>(Object.entries(entries)),
     recorded: [] as { flights: Flight[]; fetchedAt: number }[],
     gets: [] as string[],
+    pointsLookups: [] as string[],
     recordImpl: (): void => undefined,
     record(flights: readonly Flight[], fetchedAt: number): void {
       fake.recorded.push({ flights: [...flights], fetchedAt });
@@ -524,6 +529,10 @@ function fakeTracks(entries: Record<string, TrackedFlight> = {}) {
     get(hex: string): TrackedFlight | undefined {
       fake.gets.push(hex);
       return fake.entries.get(hex);
+    },
+    points(hex: string): readonly LatLon[] {
+      fake.pointsLookups.push(hex);
+      return fake.entries.get(hex.toLowerCase())?.points ?? [];
     },
   };
   return fake;
@@ -1484,5 +1493,95 @@ describe("GET /api/flights/:hex: 経路の推定（AC-P2-54）", () => {
       "滑走路まで 8.0km",
       "降下中 -704fpm",
     ]);
+  });
+});
+
+/**
+ * AC-P3-05 / 11 の配線: 推定に**保持している航跡**を渡す。
+ * 並行滑走路（羽田 16L/16R）の出発は、現在位置だけでは L/R を決められない（`"16"` に落ちる）。
+ * 航跡の最初の点（離陸直後＝滑走路端の近く・中心線上）が残っていれば `"16R"` まで決まる。
+ *
+ * 機体は RJTT 16R の離陸方向の延長線上に**合成**する（実測の生値ではない）。
+ * 4.5km の点は対向端 34L の 1.4km 先（＝しきい値 3.0km の内側）、8.0km の点はその外側
+ */
+function departingFlight(hex: string, distanceKm: number): Flight {
+  const end = RUNWAY_ENDS.find((other) => other.icao === "RJTT" && other.ident === "16R")!;
+  const bearing = runwayBearingDeg(end, RUNWAY_ENDS)!;
+  const position = destinationPoint(end, bearing, distanceKm);
+  return {
+    hex,
+    callsign: "JAL001",
+    position: { lat: position.lat, lon: position.lon, altitudeBaroFt: 2500, onGround: false },
+    trackDeg: ((bearing % 360) + 360) % 360,
+    verticalRateFpm: 1500,
+    isMlat: false,
+    seenPosSec: 1,
+    kind: "passenger",
+    source: "adsblol",
+  };
+}
+
+/** 離陸直後（4.5km）→ 8km と 2 回取得する偽の位置取得。各取得の機体は 1 機だけ */
+function departureSequence(): Loader {
+  const positions = [4.5, 8];
+  let index = 0;
+  return async () => ({
+    flights: [departingFlight("abc123", positions[Math.min(index++, positions.length - 1)]!)],
+    source: "adsblol",
+  });
+}
+
+describe("GET /api/nearby: 推定に航跡を渡す（AC-P3-05）", () => {
+  it("航跡があれば並行滑走路の出発の L/R まで決まる（tracks を渡さなければ数字だけ）", async () => {
+    const withTracks = setup(departureSequence(), (now) => ({ tracks: createTrackStore({ now }) }));
+    const withoutTracks = setup(departureSequence());
+
+    // 1 回目（離陸直後）の位置も 2 回目（8km）の位置も同じ機体。キャッシュ TTL を跨いで 2 回取得させる
+    await withTracks.get(NEARBY);
+    await withoutTracks.get(NEARBY);
+    withTracks.advance(5000);
+    withoutTracks.advance(5000);
+    const held = await withTracks.get(NEARBY);
+    const notHeld = await withoutTracks.get(NEARBY);
+
+    expect(withTracks.positions.calls).toBe(2);
+    const withTrack = flightByHex(held.body, "abc123")?.estimate;
+    expect(withTrack?.runway).toBe("16R");
+    expect(withTrack?.evidence).toContain("離陸直後 中心線から 0.0km");
+
+    // 航跡を保持していないアプリでは、同じ観測でも L/R は決まらない
+    const withoutTrack = flightByHex(notHeld.body, "abc123")?.estimate;
+    expect(withoutTrack?.runway).toBe("16");
+    expect(withoutTrack?.evidence).toContain("L/R は判別できず");
+  });
+
+  it("行ごとに tracks.points(hex) を引く", async () => {
+    const tracks = fakeTracks();
+    const t = setup(returns([departingFlight("abc123", 8), flight("ddd444")]), { tracks });
+
+    await t.get(NEARBY);
+
+    // 応答の行の並び（検索中心からの距離の昇順）で 1 機 1 回ずつ引く
+    expect(tracks.pointsLookups).toEqual(["ddd444", "abc123"]);
+  });
+});
+
+describe("GET /api/flights/:hex: 推定に航跡を渡す（AC-P3-05）", () => {
+  it("保持している航跡が推定に効く（離陸直後の点があれば 16R、無ければ 16）", async () => {
+    const t = setup(departureSequence(), (now) => ({ tracks: createTrackStore({ now }) }));
+
+    await t.get(NEARBY); // 離陸直後（4.5km）
+    t.advance(5000);
+    await t.get(NEARBY); // 8km。航跡には 2 点が残っている
+
+    const held = await t.get("/api/flights/abc123");
+    expect((held.body.flight as Flight).estimate?.runway).toBe("16R");
+    expect((held.body.flight as Flight).estimate?.evidence).toContain("離陸直後 中心線から 0.0km");
+
+    // 対照: 8km の観測しか保持していなければ、同じ機体でも L/R は決まらない
+    const late = setup(returns([departingFlight("abc123", 8)]), (now) => ({ tracks: createTrackStore({ now }) }));
+    await late.get(NEARBY);
+    const lateHeld = await late.get("/api/flights/abc123");
+    expect((lateHeld.body.flight as Flight).estimate?.runway).toBe("16");
   });
 });

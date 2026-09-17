@@ -7,7 +7,7 @@ import type { RouteInfo } from "./adsbdb/enrichment.ts";
 import { AIRPORT_FETCH_RADIUS_NM, DEFAULT_AIRPORT_FETCH_TTL_MS, createAirportOpsSource } from "./airportOpsSource.ts";
 import { TARGET_AIRPORTS } from "./data/airports.ts";
 import type { RunwayEnd } from "./data/importRunways.ts";
-import { RUNWAY_ENDS } from "./data/runways.ts";
+import { RUNWAY_ENDS, runwayEndsFor } from "./data/runways.ts";
 import { AIRPORT_OPS_WINDOW_MS } from "./estimate/airportOps.ts";
 import { runwayBearingDeg } from "./estimate/runway.ts";
 import { UpstreamError } from "./providers/provider.ts";
@@ -34,6 +34,27 @@ function approaching(end: RunwayEnd, distanceKm: number): { position: LatLon; tr
   return { position: destinationPoint(end, bearing + 180, distanceKm), trackDeg: ((bearing % 360) + 360) % 360 };
 }
 
+/** 滑走路端から離陸方向へ distanceKm だけ離した点と、滑走路の真方位へ向かう進行方向 */
+function departing(end: RunwayEnd, distanceKm: number): { position: LatLon; trackDeg: number } {
+  const bearing = runwayBearingDeg(end, RUNWAY_ENDS);
+  if (bearing === undefined) {
+    throw new Error(`${end.icao} ${end.ident} の対向端が無い`);
+  }
+  return { position: destinationPoint(end, bearing, distanceKm), trackDeg: ((bearing % 360) + 360) % 360 };
+}
+
+/**
+ * 離陸直後の航跡の 1 点（対向端の 1.0km 先・中心線上）。**滑走路上には置かない**
+ * （地上滑走中の位置は航跡に入らないので、航跡の最初の点は「最初の空中の位置通報」になる）
+ */
+function justAirborne(end: RunwayEnd): LatLon {
+  const bearing = runwayBearingDeg(end, RUNWAY_ENDS);
+  if (bearing === undefined) {
+    throw new Error(`${end.icao} ${end.ident} の対向端が無い`);
+  }
+  return destinationPoint(endOf(end.icao, end.oppositeIdent), bearing, 1);
+}
+
 type FlightOverrides = { seenPosSec?: number; kind?: Flight["kind"]; distanceKm?: number };
 
 /** RJTT 22 へ進入中の機体（推定は「進入・RWY22」になる） */
@@ -45,6 +66,22 @@ function arrivingFlight(hex: string, end: RunwayEnd, overrides: FlightOverrides 
     position: { lat: position.lat, lon: position.lon, altitudeBaroFt: 2000, onGround: false },
     trackDeg,
     verticalRateFpm: -704,
+    isMlat: false,
+    seenPosSec: overrides.seenPosSec ?? 1,
+    kind: overrides.kind ?? "passenger",
+    source: "adsblol",
+  };
+}
+
+/** その滑走路端を離陸した機体（推定は「出発・その滑走路」。並行の組なら航跡が無いと L/R まで決まらない） */
+function departingFlight(hex: string, end: RunwayEnd, overrides: FlightOverrides = {}): Flight {
+  const { position, trackDeg } = departing(end, overrides.distanceKm ?? 8);
+  return {
+    hex,
+    callsign: "ANA245",
+    position: { lat: position.lat, lon: position.lon, altitudeBaroFt: 2500, onGround: false },
+    trackDeg,
+    verticalRateFpm: 1500,
     isMlat: false,
     seenPosSec: overrides.seenPosSec ?? 1,
     kind: overrides.kind ?? "passenger",
@@ -79,16 +116,24 @@ function fakePositions(impl: Loader = async () => ({ flights: [], source: "adsbl
   return fake;
 }
 
-/** 呼び出しを記録する偽の航跡の保持 */
-function fakeTracks() {
+/**
+ * 呼び出しを記録する偽の航跡の保持。`points` は `tracks` に渡した hex（小文字）の航跡を返し、
+ * 無ければ空（＝航跡を持っていない機体）。本物と同じく大文字・小文字は区別しない
+ */
+function fakeTracks(points: Record<string, readonly LatLon[]> = {}) {
   const fake = {
     recorded: [] as { flights: Flight[]; fetchedAt: number }[],
+    pointsLookups: [] as string[],
     recordImpl: (): void => undefined,
     record(flights: readonly Flight[], fetchedAt: number): void {
       fake.recorded.push({ flights: [...flights], fetchedAt });
       fake.recordImpl();
     },
     get: () => undefined,
+    points(hex: string): readonly LatLon[] {
+      fake.pointsLookups.push(hex);
+      return points[hex.toLowerCase()] ?? [];
+    },
   };
   return fake;
 }
@@ -495,5 +540,102 @@ describe("createAirportOpsSource: 集計の推定に route を効かせる", () 
 
     expect(t.positions.queries).toHaveLength(1);
     expect(t.source.current()).toEqual([]);
+  });
+});
+
+/**
+ * AC-P3-11: **数字だけの推定（L/R 未判別）は運用方向の集計に入れない**。
+ * 「滑走路まで決まった」の定義は「`runway` がその空港の滑走路端に実在する ident と一致する」で、
+ * `"22"` は実在するので入り、`"16"`・`"34"` は実在しないので入らない（文字列の形では区別できない）。
+ *
+ * `record()` は 3 分岐にしてある。ident の判定を `decideRunway` / `toEntry` に畳むと、
+ * 「route が幾何を否定した」と「L/R が未判別」が同じ undefined に潰れ、未判別の機体で `retract` が走る。
+ */
+describe("createAirportOpsSource: 集計に入れるのは滑走路まで決まった機体だけ（AC-P3-11）", () => {
+  const NRT = { icao: "RJAA", name: "Narita International Airport" };
+  const FUK = { icao: "RJFF", name: "Fukuoka Airport" };
+  /** 「成田発」（幾何の「34R を離陸」と一致する） */
+  const DEPARTS_NARITA: RouteInfo = { route: { origin: NRT, destination: FUK, source: "adsbdb" } };
+  /** 「成田着」（幾何の「34R を離陸」と食い違う） */
+  const ARRIVES_NARITA: RouteInfo = { route: { origin: FUK, destination: NRT, source: "adsbdb" } };
+
+  const departingRunwaysOf = (source: ReturnType<typeof setup>["source"]) =>
+    source.current().map((ops) => [ops.icao, ops.departingRunways, ops.basedOn]);
+
+  it("航跡があれば並行滑走路の出発（成田 34R）が departingRunways に載る", () => {
+    const end = endOf("RJAA", "34R");
+    const withTracks = setup({ tracks: fakeTracks({ aaa111: [justAirborne(end)] }) });
+    withTracks.source.record([departingFlight("aaa111", end)], T0);
+    expect(departingRunwaysOf(withTracks.source)).toEqual([["RJAA", ["34R"], 1]]);
+
+    // 対照: 航跡が無ければ推定は "34"（数字だけ）になり、集計には入らない
+    const withoutTracks = setup();
+    withoutTracks.source.record([departingFlight("aaa111", end)], T0);
+    expect(withoutTracks.source.current()).toEqual([]);
+  });
+
+  it("L/R 未判別の機体は集計に入らず、それまでの記録も取り消さない", () => {
+    // **route は幾何と一致する「成田発」にする**。`routeContradictsGeometry` は route が無いと
+    // 早期に false を返すので、route を付けないと分岐を間違えても緑になってしまう
+    const end = endOf("RJAA", "34R");
+    const points: Record<string, readonly LatLon[]> = { aaa111: [justAirborne(end)] };
+    const t = setup({ tracks: fakeTracks(points), getRoute: () => DEPARTS_NARITA });
+
+    t.source.record([departingFlight("aaa111", end)], T0);
+    expect(departingRunwaysOf(t.source)).toEqual([["RJAA", ["34R"], 1]]);
+
+    // 航跡が落ちた（10 分窓・60 点の上限）後の観測。推定は "34" に落ちるが、記録は消さない
+    delete points.aaa111;
+    t.advance(6000);
+    t.source.record([departingFlight("aaa111", end)], t.now);
+
+    expect(departingRunwaysOf(t.source)).toEqual([["RJAA", ["34R"], 1]]);
+  });
+
+  it("route が幾何を否定した機体は取り消す（航跡を渡していても）", () => {
+    const end = endOf("RJAA", "34R");
+    const routes: Record<string, RouteInfo> = {};
+    const t = setup({
+      tracks: fakeTracks({ aaa111: [justAirborne(end)] }),
+      getRoute: (callsign) => routes[callsign],
+    });
+
+    t.source.record([departingFlight("aaa111", end)], T0);
+    expect(departingRunwaysOf(t.source)).toEqual([["RJAA", ["34R"], 1]]);
+
+    // 後から届いた route は「成田着」。行の推定は「進入・滑走路なし」になるので集計からも消す
+    routes.ANA245 = ARRIVES_NARITA;
+    t.advance(6000);
+    t.source.record([departingFlight("aaa111", end)], t.now);
+
+    expect(t.source.current()).toEqual([]);
+  });
+
+  it("集計に出る滑走路はすべて、その空港の滑走路端に実在する ident", () => {
+    const narita34R = endOf("RJAA", "34R");
+    const t = setup({ tracks: fakeTracks({ ccc333: [justAirborne(narita34R)] }) });
+    t.source.record(
+      [
+        arrivingFlight("aaa111", endOf("RJTT", "22")), // 単独の組（そのまま "22"）
+        arrivingFlight("bbb222", endOf("RJTT", "34L")), // 並行の組（進入は現在位置の横ずれで "34L"）
+        departingFlight("ccc333", narita34R), // 並行の組（航跡があるので "34R"）
+        departingFlight("ddd444", endOf("RJTT", "16R")), // 航跡が無いので "16" ＝集計に入らない
+      ],
+      T0,
+    );
+
+    const ops = t.source.current();
+    expect(ops.length).toBeGreaterThan(0);
+    for (const airport of ops) {
+      const idents = runwayEndsFor(airport.icao).map((end) => end.ident);
+      for (const runway of [...airport.landingRunways, ...airport.departingRunways]) {
+        expect(idents).toContain(runway);
+      }
+    }
+    // 数字だけに落ちた機体（ddd444）は基礎の機数に数えられていない
+    expect(ops.map((airport) => [airport.icao, airport.landingRunways, airport.departingRunways, airport.basedOn])).toEqual([
+      ["RJTT", ["22", "34L"], [], 2],
+      ["RJAA", [], ["34R"], 1],
+    ]);
   });
 });

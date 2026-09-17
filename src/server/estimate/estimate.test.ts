@@ -112,6 +112,15 @@ function departing(
   };
 }
 
+/**
+ * 出発機の合成航跡の 1 点（runway.test.ts と同じ作り方）。**滑走路上には置かない**
+ * （地上滑走中の位置は航跡に入らないので、航跡の最初の点は「最初の空中の位置通報」になる）。
+ * 対向端を基準に離陸方向へ alongKm 進んだ中心線上の点で、使うのは destinationPoint / bearingDeg だけ
+ */
+function departureTrack(end: RunwayEnd, alongKm = 1): LatLon[] {
+  return [destinationPoint(endOf(end.icao, end.oppositeIdent), trueBearingOf(end), alongKm)];
+}
+
 /** 空港中心から方位 fromBearing・距離 distanceKm の位置に、空港へ真っ直ぐ向かう機体を置く */
 function towardAirport(
   target: TargetAirport,
@@ -142,20 +151,63 @@ describe("生成規則: 滑走路が決まった進入", () => {
   });
 });
 
-describe("生成規則: 滑走路が決まった出発", () => {
-  const estimate = buildEstimate(
-    flight({ ...departing(endOf("RJTT", "16L"), { distanceKm: 8 }), altitudeBaroFt: 2500, verticalRateFpm: 1500 }),
-  );
-
-  it("phase = departure・滑走路 16L・confidence 0.9", () => {
-    expect(estimate?.phase).toBe("departure");
-    expect(estimate?.airport).toEqual({ icao: "RJTT", name: "羽田" });
-    expect(estimate?.runway).toBe("16L");
-    expect(estimate?.confidence).toBe(0.9);
+/**
+ * 羽田 16L を離陸して 8km の機体。**16L/16R は並行の組**なので、Phase 2 の期待値（`"16L"`・0.9）から
+ * 次のように変わる（AC-P3-05 / 06 / 07 / 09）:
+ * - 航跡が無ければ L/R を決める材料が無いので `"16"`（数字だけ）に落ち、evidence に「L/R は判別できず」が付く
+ * - 航跡があれば `"16L"` まで決まるが、確度は誤判別帯があるので `min(素点, 0.6)` で頭打ちになる
+ */
+describe("生成規則: 滑走路が決まった出発（並行の組）", () => {
+  const departingFrom16L = flight({
+    ...departing(endOf("RJTT", "16L"), { distanceKm: 8 }),
+    altitudeBaroFt: 2500,
+    verticalRateFpm: 1500,
   });
 
-  it("evidence は上昇中を示す", () => {
-    expect(estimate?.evidence).toEqual(["方位のズレ 0.0°", "滑走路まで 8.0km", "上昇中 +1500fpm"]);
+  describe("航跡を渡さない（Phase 2 と同じ入力）", () => {
+    const estimate = buildEstimate(departingFrom16L);
+
+    it("phase = departure・滑走路は数字だけ・confidence 0.6", () => {
+      expect(estimate?.phase).toBe("departure");
+      expect(estimate?.airport).toEqual({ icao: "RJTT", name: "羽田" });
+      expect(estimate?.runway).toBe("16");
+      expect(estimate?.confidence).toBe(0.6);
+    });
+
+    it("evidence は上昇中を示し、L/R が判別できないことを断る", () => {
+      expect(estimate?.evidence).toEqual([
+        "方位のズレ 0.0°",
+        "滑走路まで 8.0km",
+        "L/R は判別できず",
+        "上昇中 +1500fpm",
+      ]);
+    });
+  });
+
+  describe("対照: 航跡を渡す", () => {
+    const estimate = buildEstimate(
+      departingFrom16L,
+      RUNWAY_ENDS,
+      TARGET_AIRPORTS,
+      departureTrack(endOf("RJTT", "16L")),
+    );
+
+    it("16L まで決まる（確度は AC-P3-07 の上限で 0.6）", () => {
+      expect(estimate?.phase).toBe("departure");
+      expect(estimate?.airport).toEqual({ icao: "RJTT", name: "羽田" });
+      expect(estimate?.runway).toBe("16L");
+      expect(estimate?.confidence).toBe(0.6);
+      expect(confidenceLabel(estimate?.confidence ?? 0, true)).toBe("中");
+    });
+
+    it("evidence の判別の行は離陸直後の横ずれ（AC-P3-09）", () => {
+      expect(estimate?.evidence).toEqual([
+        "方位のズレ 0.0°",
+        "滑走路まで 8.0km",
+        "離陸直後 中心線から 0.0km",
+        "上昇中 +1500fpm",
+      ]);
+    });
   });
 });
 
@@ -589,5 +641,140 @@ describe("buildEstimate の引数", () => {
     expect(hanedaOnly?.phase).toBe("arrival");
     expect(hanedaOnly?.airport).toEqual({ icao: "RJTT", name: "羽田" });
     expect(hanedaOnly?.runway).toBeUndefined();
+  });
+});
+
+/**
+ * AC-P3-08: **1 つだけの組**（羽田 04 / 22 / 05 / 23。並行の相手がいない滑走路）の挙動は Phase 2 と
+ * **完全に同じ**（`runway`・`confidence`・`evidence`）で、**航跡を渡しても渡さなくても変わらない**。
+ * 組の端が 1 つなら L/C/R の判別も確度の上限（AC-P3-07）も走らないことを、`buildEstimate` 水準で固定する。
+ * 渡す航跡は「その滑走路を離陸した機体」の位置（対向端の先 1km ＝中心線上）で、並行の組なら判別が効く点。
+ */
+describe("AC-P3-08: 単独の組（羽田 04 / 22 / 05 / 23）は航跡の有無で変わらない", () => {
+  describe.each(["04", "22", "05", "23"])("RJTT %s", (ident) => {
+    const end = endOf("RJTT", ident);
+    const cases = [
+      {
+        label: "進入",
+        flight: flight({ ...approaching(end, { distanceKm: 8 }), altitudeBaroFt: 1825, verticalRateFpm: -704 }),
+        verticalRate: "降下中 -704fpm",
+        phase: "arrival",
+      },
+      {
+        label: "出発",
+        flight: flight({ ...departing(end, { distanceKm: 8 }), altitudeBaroFt: 2500, verticalRateFpm: 1500 }),
+        verticalRate: "上昇中 +1500fpm",
+        phase: "departure",
+      },
+    ] as const;
+
+    it.each(cases)("$label は航跡を渡しても同じ推定になる", ({ flight: subject, verticalRate, phase }) => {
+      const withoutTrack = buildEstimate(subject);
+      const withTrack = buildEstimate(subject, RUNWAY_ENDS, TARGET_AIRPORTS, departureTrack(end));
+
+      expect(withoutTrack).toEqual(withTrack);
+      // Phase 2 の値（滑走路は ident のまま・確度は素点 0.9・evidence に判別の行は無い）
+      expect(withoutTrack?.phase).toBe(phase);
+      expect(withoutTrack?.airport).toEqual({ icao: "RJTT", name: "羽田" });
+      expect(withoutTrack?.runway).toBe(ident);
+      expect(withoutTrack?.confidence).toBe(0.9);
+      expect(withoutTrack?.evidence).toEqual(["方位のズレ 0.0°", "滑走路まで 8.0km", verticalRate]);
+      expect(confidenceLabel(withoutTrack?.confidence ?? 0, true)).toBe("高");
+    });
+  });
+});
+
+/**
+ * AC-P3-07: 並行の組では L/C/R を **1 点の横ずれ**で決めており誤判別帯が残るので（plan の
+ * §「既知の妥協: 並行滑走路の誤判別帯」）、確度は `min(素点, 0.6)` ＝ 上限「中」にする。
+ * 決めたときも決めなかったときも掛かる（＝「組の端が 2 つ以上」と同値）。
+ */
+describe("AC-P3-07: 並行の組の確度は「中」で頭打ち", () => {
+  const end = endOf("RJTT", "16L");
+  const departingFrom16L = {
+    ...departing(end, { distanceKm: 8 }),
+    altitudeBaroFt: 2500,
+    verticalRateFpm: 1500,
+  } as const;
+  const track = departureTrack(end);
+
+  it("対照: 同じ条件でも単独の組（RJTT 22）なら素点の 0.9 のまま", () => {
+    // ズレ 0.0°・8km は素点 0.9 の条件（ズレ < 2° かつ 距離 < 25km）。上限は組の端数だけで決まる
+    const single = flight({ ...departing(endOf("RJTT", "22"), { distanceKm: 8 }), altitudeBaroFt: 2500, verticalRateFpm: 1500 });
+    expect(buildEstimate(single, RUNWAY_ENDS, TARGET_AIRPORTS, departureTrack(endOf("RJTT", "22")))?.confidence).toBe(0.9);
+  });
+
+  it("航跡で 16L まで決めても 0.9 → 0.6", () => {
+    const estimate = buildEstimate(flight(departingFrom16L), RUNWAY_ENDS, TARGET_AIRPORTS, track);
+    expect(estimate?.runway).toBe("16L");
+    expect(estimate?.confidence).toBe(0.6);
+  });
+
+  it("L/R を決めなかったときも 0.9 → 0.6", () => {
+    const estimate = buildEstimate(flight(departingFrom16L));
+    expect(estimate?.runway).toBe("16");
+    expect(estimate?.confidence).toBe(0.6);
+  });
+
+  it("食い違いの減点は上限の**後**に引く（0.6 − 0.2 = 0.4）", () => {
+    // adsbdb は「成田発」だが、幾何は羽田 16L からの出発。空港が食い違うので AC-P2-14 の減点が乗る。
+    // 上限を減点の後に掛けると min(0.9 − 0.2, 0.6) = 0.6 になってしまう（0.4 でその順序を固定する）
+    const estimate = buildEstimate(
+      flight({ ...departingFrom16L, route: { origin: "RJAA", destination: "RJOO" } }),
+      RUNWAY_ENDS,
+      TARGET_AIRPORTS,
+      track,
+    );
+    expect(estimate?.runway).toBe("16L");
+    expect(estimate?.evidence).toContain("幾何判定は 羽田");
+    expect(estimate?.confidence).toBe(0.4);
+    expect(applyDisagreementPenalty(0.6)).toBe(0.4);
+  });
+});
+
+/** AC-P3-09: evidence の判別の行は**並行の組の勝者にだけ**付く。書式は進入・出発・未判別で異なる */
+describe("AC-P3-09: evidence の判別の行", () => {
+  const parallel = endOf("RJTT", "16L");
+
+  it("進入は現在位置の横ずれ（「中心線から 0.1km」の書式）", () => {
+    const estimate = buildEstimate(
+      flight({ ...approaching(parallel, { distanceKm: 10 }), altitudeBaroFt: 1825, verticalRateFpm: -704 }),
+    );
+    expect(estimate?.runway).toBe("16L");
+    expect(estimate?.evidence).toEqual(["方位のズレ 0.0°", "滑走路まで 10.0km", "中心線から 0.0km", "降下中 -704fpm"]);
+  });
+
+  it("判別の行は「滑走路まで」の直後・昇降率の前に入る", () => {
+    // どの端かの根拠（方位のズレ・距離・横ずれ）を続けて出し、機体の状態・裏付けはその後に置く
+    const estimate = buildEstimate(
+      flight({
+        ...approaching(parallel, { distanceKm: 10 }),
+        altitudeBaroFt: 1825,
+        verticalRateFpm: -704,
+        route: { origin: "RJOO", destination: "RJTT" },
+      }),
+    );
+    expect(estimate?.evidence).toEqual([
+      "方位のズレ 0.0°",
+      "滑走路まで 10.0km",
+      "中心線から 0.0km",
+      "降下中 -704fpm",
+      "adsbdb: 羽田 着",
+    ]);
+  });
+
+  it("単独の組（RJTT 22）には判別の行が付かない", () => {
+    const estimate = buildEstimate(
+      flight({ ...approaching(endOf("RJTT", "22"), { distanceKm: 10 }), altitudeBaroFt: 1825, verticalRateFpm: -704 }),
+    );
+    expect(estimate?.evidence.some((line) => line.includes("中心線から") || line.includes("L/R"))).toBe(false);
+  });
+
+  it("滑走路が決まらなければ（候補なし）判別の行も付かない", () => {
+    const estimate = buildEstimate(
+      flight({ ...towardAirport(HANEDA, { fromBearing: 45, distanceKm: 40 }), altitudeBaroFt: 8000, verticalRateFpm: -704 }),
+    );
+    expect(estimate?.runway).toBeUndefined();
+    expect(estimate?.evidence.some((line) => line.includes("中心線から") || line.includes("L/R"))).toBe(false);
   });
 });

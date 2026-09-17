@@ -41,7 +41,7 @@ export type { AttachRoutesResult };
 export type AppEnrichment = Pick<Enrichment, "getRoute" | "enqueueRoutes" | "getAircraft">;
 
 /** アプリが使う航跡の保持（`trackStore.ts` の `TrackStore` の一部） */
-export type AppTracks = Pick<TrackStore, "record" | "get">;
+export type AppTracks = Pick<TrackStore, "record" | "get" | "points">;
 
 /** アプリが使う運用方向の集計（`airportOpsSource.ts` の `AirportOpsSource`。型だけを参照する） */
 export type AppAirportOps = Pick<AirportOpsSource, "current" | "record" | "refresh">;
@@ -147,14 +147,18 @@ function compareCodeUnits(a: string, b: string): number {
 /**
  * 各機体に経路の推定を付ける（AC-P2-40）。入力の配列と機体オブジェクトは書き換えない。
  * 滑走路データは静的なので、`airportOps` を指定していなくても付く。
- * 生成規則で推定が付かない機体（不明かつ滑走路なし）は入力と同じオブジェクトのまま
+ * 生成規則で推定が付かない機体（不明かつ滑走路なし）は入力と同じオブジェクトのまま。
+ *
+ * `getTrack` を渡すと各機体の航跡を引いて推定に渡す（並行滑走路の出発の L/C/R 判別。AC-P3-05）。
+ * 渡さなければ航跡を使わない推定になる（出発の L/C/R は数字だけに落ちる）
  */
-export function attachEstimates(flights: readonly Flight[]): Flight[] {
-  return flights.map(withEstimate);
+export function attachEstimates(flights: readonly Flight[], getTrack?: (hex: string) => readonly LatLon[]): Flight[] {
+  return flights.map((flight) => withEstimate(flight, getTrack?.(flight.hex)));
 }
 
-function withEstimate(flight: Flight): Flight {
-  const estimate = buildEstimate(flight);
+/** 1 機に推定を付ける。`track` は**古い順**の航跡（省略可）。滑走路端・対象空港は既定のまま使う */
+function withEstimate(flight: Flight, track?: readonly LatLon[]): Flight {
+  const estimate = buildEstimate(flight, undefined, undefined, track);
   return estimate === undefined ? flight : { ...flight, estimate };
 }
 
@@ -318,9 +322,10 @@ export function createApp(options: AppOptions): Hono {
       flights = routed.flights;
       enqueueMissingRoutes(enrichment, routed.missingCallsigns);
     }
-    // 推定は静的な滑走路データだけで決まるので、airportOps の指定に関わらず付ける（AC-P2-40）。
-    // ルートを付けた後に呼び、route の裏付け（AC-P2-14）を使えるようにする
-    flights = attachEstimates(flights);
+    // 推定は静的な滑走路データ（と保持している航跡）だけで決まるので、airportOps の指定に関わらず付ける（AC-P2-40）。
+    // ルートを付けた後に呼び、route の裏付け（AC-P2-14）を使えるようにする。
+    // 航跡があれば並行滑走路の出発でも L/C/R まで決まる（AC-P3-05。無ければ数字だけ）
+    flights = attachEstimates(flights, tracks === undefined ? undefined : (hex) => tracks.points(hex));
 
     if (airportOps !== undefined) startAirportOpsRefresh(airportOps);
 
@@ -344,7 +349,8 @@ export function createApp(options: AppOptions): Hono {
       return c.json({ error: MESSAGE_FLIGHT_NOT_FOUND } satisfies ApiError, 404);
     }
     if (enrichment === undefined && photos === undefined) {
-      return c.json(flightDetail(held.tracked, withEstimate(held.flight)), 200);
+      // 保持している航跡を推定に渡す（応答の `track` と同じ保持値。AC-P3-05）
+      return c.json(flightDetail(held.tracked, withEstimate(held.flight, held.tracked.points)), 200);
     }
 
     // 機体情報・写真の照会を先に始めてから未取得のルートを積む（機体情報の照会をルート照会の後ろに並べない。AC-A14）
@@ -365,7 +371,7 @@ export function createApp(options: AppOptions): Hono {
       return c.json({ error: MESSAGE_FLIGHT_NOT_FOUND } satisfies ApiError, 404);
     }
     // 推定はルートを付けた後に組み立てる（route の裏付けを使う。AC-P2-54）
-    let flight = withEstimate(attachRoutes([latest.flight], getRoute).flights[0]!);
+    let flight = withEstimate(attachRoutes([latest.flight], getRoute).flights[0]!, latest.tracked.points);
     const aircraftWithPhoto = mergeAircraft(aircraft, photo);
     if (aircraftWithPhoto !== undefined) flight = { ...flight, aircraft: aircraftWithPhoto };
     return c.json(flightDetail(latest.tracked, flight), 200);

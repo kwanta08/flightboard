@@ -1,8 +1,9 @@
 // 推定の組み立て（docs/spec.md §10.2、plan の「estimate の生成規則と confidence 表」）。
 // フェーズ判定（phase.ts）と滑走路の採点（runway.ts）を束ね、Flight["estimate"] を作る純粋関数。
-// 入力は単発の Flight だけで、航跡・I/O・グローバル状態は使わない。
+// 入力は単発の Flight と（省略可能な）その機体の航跡だけで、I/O・グローバル状態は使わない。
+// 航跡は並行滑走路の出発で L/C/R を判別するときだけ使う（AC-P3-05）。
 import { airportDisplayName } from "../../shared/airports.ts";
-import { haversineKm } from "../../shared/geo.ts";
+import { type LatLon, haversineKm } from "../../shared/geo.ts";
 import type { Flight } from "../../shared/types.ts";
 import { TARGET_AIRPORTS, type TargetAirport } from "../data/airports.ts";
 import type { RunwayEnd } from "../data/importRunways.ts";
@@ -14,7 +15,7 @@ import {
   detectPhase,
   finiteOrUndefined,
 } from "./phase.ts";
-import { type RunwayCandidate, selectRunway } from "./runway.ts";
+import { type RunwaySelection, selectRunway } from "./runway.ts";
 
 type Estimate = NonNullable<Flight["estimate"]>;
 
@@ -57,11 +58,16 @@ type RouteBacking = { phase: "arrival" | "departure"; airport: TargetAirport };
  *   幾何が裏を取れない（unknown・route と食い違う）ときも滑走路は決めない（AC-P2-16。食い違いなら 0.5 − 0.2 = 0.3）
  * - 通過 → estimate あり（airport・runway なし、0.5）
  * - 不明 かつ 滑走路なし → undefined（推定を付けない）
+ *
+ * `track`（その機体の航跡。**古い順**）は省略できる。渡すと並行滑走路の**出発**で L/C/R を判別できる（AC-P3-05）。
+ * 渡さなければ Phase 2 と同じ入力で、出発の L/C/R は「決めない」（＝数字だけ）に落ちる。
+ * 単独の組（羽田 04 / 22 / 05 / 23）は航跡の有無で結果が変わらない（AC-P3-08）。
  */
 export function buildEstimate(
   flight: Flight,
   ends: readonly RunwayEnd[] = RUNWAY_ENDS,
   airports: readonly TargetAirport[] = TARGET_AIRPORTS,
+  track?: readonly LatLon[],
 ): Flight["estimate"] | undefined {
   // ends はフェーズ判定にも渡す（基準点＝滑走路端。絞って渡したとき、フェーズの基準点と候補探索で見る端を揃える）
   const geometry = detectPhase(flight, airports, ends);
@@ -76,27 +82,33 @@ export function buildEstimate(
   // 幾何が unknown のとき（高度・trackDeg・verticalRateFpm の欠損、AC-P2-10/11 の高度条件を満たさない機体）も、
   // route と食い違うときも一致しないので、滑走路は決めない。
   const searchPhase = (phase === "arrival" || phase === "departure") && geometry.phase === phase ? phase : undefined;
-  const candidate = searchPhase ? searchRunway(flight, searchPhase, targetEnds) : undefined;
-  const runwayAirport = candidate ? findAirport(airports, candidate.end.icao) : undefined;
+  const selection = searchPhase ? searchRunway(flight, searchPhase, targetEnds, track) : undefined;
+  const runwayAirport = selection ? findAirport(airports, selection.end.icao) : undefined;
   // 滑走路が決まればその空港。決まらなければ route の裏付け → 接近／離脱と判定した空港の順
   const airport = phase === "enroute" ? undefined : (runwayAirport ?? route?.airport ?? geometry.airport);
 
   const disagreement = describeDisagreement(route, geometry, runwayAirport ?? geometry.airport);
-  const rawConfidence = baseConfidence(phase, candidate, route);
+  // 素点は**選ばれた端**の値から出す（未判別なら組内で採点最小の端。AC-P3-10。値は selection が持っている）
+  const rawConfidence = baseConfidence(phase, selection, route);
   if (rawConfidence === undefined) {
     return undefined; // phase = "unknown" かつ滑走路なし
   }
+  // AC-P3-07: 並行の組は進入・出発とも「1 点の横ずれ」で L/C/R を決めており誤判別帯が残るので、
+  // 確度を「中」で頭打ちにする（決めた／決めなかったの別によらない。判定は runway.ts の capConfidence）。
+  // **食い違い減点より前**に掛ける（後に掛けると減点後の 0.4 が 0.6 に上がってしまう）
+  const capped = selection?.capConfidence ? Math.min(rawConfidence, CONFIDENCE_RUNWAY_MEDIUM) : rawConfidence;
 
   const estimate: Estimate = {
     phase,
-    confidence: disagreement ? applyDisagreementPenalty(rawConfidence) : rawConfidence,
-    evidence: buildEvidence({ flight, airport, candidate, route, disagreement }),
+    confidence: disagreement ? applyDisagreementPenalty(capped) : capped,
+    evidence: buildEvidence({ flight, airport, selection, route, disagreement }),
   };
   if (airport) {
     estimate.airport = { icao: airport.icao, name: airportName(airport.icao) };
   }
-  if (candidate) {
-    estimate.runway = candidate.end.ident;
+  if (selection) {
+    // L/C/R まで決まれば端の ident、決まらなければ指示子の数字だけ（"16"。AC-P3-06）
+    estimate.runway = selection.runway;
   }
   return estimate;
 }
@@ -106,17 +118,20 @@ export function applyDisagreementPenalty(confidence: number): number {
   return Math.max(MIN_CONFIDENCE, Math.round((confidence - DISAGREEMENT_PENALTY) * 100) / 100);
 }
 
-/** confidence の素点。undefined なら推定を付けない（不明 かつ 滑走路なし） */
+/**
+ * confidence の素点。undefined なら推定を付けない（不明 かつ 滑走路なし）。
+ * 値は**選ばれた端**のもの（未判別なら組内で採点最小の端。AC-P3-10）。上限（AC-P3-07）は呼び出し側で掛ける
+ */
 function baseConfidence(
   phase: FlightPhase,
-  candidate: RunwayCandidate | undefined,
+  selection: RunwaySelection | undefined,
   route: RouteBacking | undefined,
 ): number | undefined {
-  if (candidate) {
-    if (candidate.headingOffDeg < STRONG_HEADING_OFF_DEG && candidate.distanceKm < STRONG_DISTANCE_KM) {
+  if (selection) {
+    if (selection.headingOffDeg < STRONG_HEADING_OFF_DEG && selection.distanceKm < STRONG_DISTANCE_KM) {
       return CONFIDENCE_RUNWAY_STRONG;
     }
-    if (candidate.headingOffDeg < candidate.toleranceDeg * MEDIUM_TOLERANCE_RATIO) {
+    if (selection.headingOffDeg < selection.toleranceDeg * MEDIUM_TOLERANCE_RATIO) {
       return CONFIDENCE_RUNWAY_MEDIUM;
     }
     return CONFIDENCE_RUNWAY_WEAK;
@@ -194,13 +209,14 @@ function searchRunway(
   flight: Flight,
   phase: "arrival" | "departure",
   ends: readonly RunwayEnd[],
-): RunwayCandidate | undefined {
+  track: readonly LatLon[] | undefined,
+): RunwaySelection | undefined {
   const trackDeg = finiteOrUndefined(flight.trackDeg);
   const verticalRateFpm = finiteOrUndefined(flight.verticalRateFpm);
   if (trackDeg === undefined || verticalRateFpm === undefined) {
     return undefined;
   }
-  return selectRunway({ position: flight.position, trackDeg, verticalRateFpm, phase }, ends);
+  return selectRunway({ position: flight.position, trackDeg, verticalRateFpm, phase, track }, ends);
 }
 
 /**
@@ -211,16 +227,23 @@ function searchRunway(
 function buildEvidence(args: {
   flight: Flight;
   airport: TargetAirport | undefined;
-  candidate: RunwayCandidate | undefined;
+  selection: RunwaySelection | undefined;
   route: RouteBacking | undefined;
   disagreement: string | undefined;
 }): string[] {
-  const { flight, airport, candidate, route, disagreement } = args;
+  const { flight, airport, selection, route, disagreement } = args;
   const evidence: string[] = [];
 
-  if (candidate) {
-    evidence.push(`方位のズレ ${oneDecimal(candidate.headingOffDeg)}°`);
-    evidence.push(`滑走路まで ${oneDecimal(candidate.distanceKm)}km`);
+  if (selection) {
+    // 方位のズレ・距離は**選ばれた端**の値（未判別なら組内で採点最小の端。AC-P3-10）
+    evidence.push(`方位のズレ ${oneDecimal(selection.headingOffDeg)}°`);
+    evidence.push(`滑走路まで ${oneDecimal(selection.distanceKm)}km`);
+    if (selection.sideEvidence !== undefined) {
+      // L/R の判別の行（並行の組のときだけ付く。AC-P3-09）は、**同じ「どの端か」の根拠**である
+      // 方位のズレ・距離の直後に置き、機体の状態（昇降率）や外部データ（adsbdb）より前に出す。
+      // 読む順が「滑走路を選んだ理由 → 機体の状態 → 裏付け → 食い違い」で一貫する
+      evidence.push(selection.sideEvidence);
+    }
   } else if (airport) {
     evidence.push(`${airportName(airport.icao)}まで ${oneDecimal(haversineKm(flight.position, airport))}km`);
   }
