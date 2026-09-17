@@ -11,7 +11,7 @@ export const DASH = "—";
 export const KT_TO_KMH = 1.852;
 
 // ---- 表示の単位（F-09・仕様 Q6） ----
-// 切り替えるのは高度と対地速度だけ。昇降率は m/分（Q15）、距離は km で固定する。
+// 切り替えるのは高度と対地速度だけ。昇降率は fpm（Q15）、距離は km で固定する。
 // 型と既定値はここ（書式の関数と同じ場所）に 1 つだけ置き、settingsStore.ts はこれを再輸出する
 // （settingsStore.ts に置くと format.ts → settingsStore.ts → listView.ts → flightRows.ts → format.ts の循環になる）。
 
@@ -119,16 +119,26 @@ export function formatDistanceKm(km: MaybeNumber): string {
   return `${Math.round(km)}km`;
 }
 
-/** 昇降率（fpm）を m/分 の整数に。正なら "+" を付ける（+1000fpm → "+305m/分"） */
+/**
+ * 昇降率（fpm）を **fpm のまま**整数に。正なら "+" を付ける（1500 → "+1500fpm"、-704 → "-704fpm"、0 → "0fpm"）。
+ * **単位は取らない**（昇降率は F-09・Q19 の単位設定の対象外。切り替えるのは高度と対地速度だけ）。
+ * 書式は根拠（evidence）の行（`src/server/estimate/estimate.ts` の `verticalRateEvidence`。
+ * 「降下中 -704fpm」「上昇中 +1500fpm」「水平飛行 0fpm」）に合わせる（仕様 Q15）:
+ * - 丸めは同じ `Math.round(fpm)`。詳細パネルで同じ機体の根拠と昇降率が必ず同じ数字になる
+ * - -0 に丸まる値は 0（evidence の `rounded === 0 ? 0 : rounded` と同じ）
+ * - 桁区切りはしない（evidence が「+1500fpm」なので `formatAltitudeFt` の「1,500ft」には揃えない）
+ * - 符号は値そのものから付ける。evidence は「上昇中」「降下中」の語が向きを伝えるので ±200fpm 以内では
+ *   符号を省くが、この行には語が無いので正なら必ず "+" を出す（正負の見分けが値だけに掛かっている）
+ */
 export function formatVerticalRateFpm(fpm: MaybeNumber): string {
   if (!isFiniteNumber(fpm)) {
     return DASH;
   }
-  const mPerMin = Math.round(fpm * FT_TO_M);
-  if (mPerMin > 0) {
-    return `+${mPerMin}m/分`;
+  const rounded = Math.round(fpm);
+  if (rounded > 0) {
+    return `+${rounded}fpm`;
   }
-  return `${normalizeZero(mPerMin)}m/分`;
+  return `${normalizeZero(rounded)}fpm`;
 }
 
 export type VerticalTrend = "climb" | "descend" | "level";

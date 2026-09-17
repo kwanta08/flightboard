@@ -138,8 +138,8 @@ describe("表示の単位（F-09・仕様 Q6・AC-P2-72）", () => {
     });
   });
 
-  it("昇降率は単位の切り替えの対象外（仕様 Q15「昇降率の単位は m/分」）", () => {
-    expect(formatVerticalRateFpm(1000)).toBe("+305m/分");
+  it("昇降率は単位の切り替えの対象外（仕様 Q15「昇降率の単位は fpm」。単位の引数を取らない）", () => {
+    expect(formatVerticalRateFpm(1000)).toBe("+1000fpm");
   });
 
   it("距離は単位の切り替えの対象外（km のまま。F-09 は高度と速度だけを挙げている）", () => {
@@ -206,22 +206,30 @@ describe("formatTrend（記号と文字の両方）", () => {
   });
 });
 
-describe("formatVerticalRateFpm（fpm → m/分 の整数、正は + 付き）", () => {
+// 書式は根拠（evidence）の行（src/server/estimate/estimate.ts の verticalRateEvidence。
+// 「上昇中 +1500fpm」「降下中 -704fpm」「水平飛行 0fpm」）に合わせる（仕様 Q15・AC-P3-20/21）
+describe("formatVerticalRateFpm（fpm のまま整数、正は + 付き）", () => {
   it.each([
-    [1000, "+305m/分"], // 304.8 → 305
-    [-1000, "-305m/分"],
-    [-704, "-215m/分"], // -214.58 → -215
-    [0, "0m/分"],
+    [1500, "+1500fpm"], // evidence の「上昇中 +1500fpm」と同じ数字・同じ単位
+    [-704, "-704fpm"], // evidence の「降下中 -704fpm」と同じ
+    [0, "0fpm"], // evidence の「水平飛行 0fpm」と同じ
+    [-1000, "-1000fpm"],
+    [1000.4, "+1000fpm"], // 丸めは evidence と同じ Math.round
+    [-704.5, "-704fpm"], // Math.round は .5 を +∞ 方向へ。evidence も同じ関数なので数字がずれない
   ])("%s fpm → %s", (fpm, expected) => {
     expect(formatVerticalRateFpm(fpm)).toBe(expected);
+  });
+
+  it("桁区切りはしない（evidence の「+1500fpm」に揃える。高度の「1,500ft」とは別の流儀）", () => {
+    expect(formatVerticalRateFpm(2400)).toBe("+2400fpm");
   });
 
   it.each([null, undefined, Number.NaN])("%s → 「—」", (value) => {
     expect(formatVerticalRateFpm(value)).toBe("—");
   });
 
-  it("-0 に丸まる負の小さな値は「0m/分」（-1fpm = -0.3048m/分）", () => {
-    expect(formatVerticalRateFpm(-1)).toBe("0m/分");
+  it("-0 に丸まる負の小さな値は「0fpm」（-0.4fpm）", () => {
+    expect(formatVerticalRateFpm(-0.4)).toBe("0fpm");
   });
 });
 

@@ -125,7 +125,7 @@ describe("buildDetailView: 全項目が揃った詳細の値", () => {
     expect(valueOf(view, "機体", "ICAO 24bit アドレス")).toBe("86E7A0");
   });
 
-  it("飛行状態: 単位は m・km/h・m/分", () => {
+  it("飛行状態: 単位は m・km/h・fpm", () => {
     // 2900 × 0.3048 = 883.92 → 880、3000 × 0.3048 = 914.4 → 910、5000 × 0.3048 = 1524 → 1,520
     expect(valueOf(view, "飛行状態", "気圧高度")).toBe("880m");
     expect(valueOf(view, "飛行状態", "GNSS 高度")).toBe("910m");
@@ -133,8 +133,8 @@ describe("buildDetailView: 全項目が揃った詳細の値", () => {
     expect(valueOf(view, "飛行状態", "対地速度")).toBe("463km/h");
     // 123° は [112.5, 135) → 東南東
     expect(valueOf(view, "飛行状態", "進行方向")).toBe("123°（東南東）");
-    // 1000 × 0.3048 = 304.8 → +305
-    expect(valueOf(view, "飛行状態", "昇降率")).toBe("+305m/分");
+    // 昇降率は換算せず fpm のまま（仕様 Q15。根拠の行と同じ単位）
+    expect(valueOf(view, "飛行状態", "昇降率")).toBe("+1000fpm");
     expect(valueOf(view, "飛行状態", "目標高度")).toBe("1,520m");
     expect(valueOf(view, "飛行状態", "スコーク")).toBe("2071");
   });
@@ -167,11 +167,16 @@ describe("buildDetailView: 全項目が揃った詳細の値", () => {
     });
   });
 
-  it("単位を渡さなければ m・km/h（ft・kt・fpm を出さない）", () => {
-    const values = view.sections.flatMap((section) => section.items.map((item) => item.value));
+  // 昇降率は単位の切り替えの対象外で、仕様 Q15 の改訂（AC-P3-20）で fpm 固定になったので、この検査からは外す
+  // （fpm のままであることは「昇降率は根拠（evidence）と同じ単位・同じ数字」の describe が単位ごとに固定する）
+  it("単位を渡さなければ m・km/h（昇降率を除き ft・kt・fpm を出さない）", () => {
+    const values = view.sections.flatMap((section) =>
+      section.items.filter((item) => item.label !== DETAIL_ITEM_LABELS.verticalRate).map((item) => item.value),
+    );
     for (const value of values) {
       expect(value).not.toMatch(/ft|kt|fpm/);
     }
+    expect(valueOf(view, "飛行状態", DETAIL_ITEM_LABELS.verticalRate)).toBe("+1000fpm");
   });
 });
 
@@ -202,8 +207,8 @@ describe("buildDetailView: 表示の単位（F-09・AC-P2-72）", () => {
     expect(valueOf(view, "飛行状態", "対地速度")).toBe("250kt");
   });
 
-  it("昇降率は m/分 のまま（仕様 Q15。切り替えるのは高度と対地速度だけ）", () => {
-    expect(valueOf(view, "飛行状態", "昇降率")).toBe("+305m/分");
+  it("昇降率は fpm のまま（仕様 Q15。切り替えるのは高度と対地速度だけ）", () => {
+    expect(valueOf(view, "飛行状態", "昇降率")).toBe("+1000fpm");
   });
 
   it("自分との関係の距離は km のまま", () => {
@@ -648,6 +653,56 @@ describe("buildDetailView: 「経路」の区分（AC-P2-53・F-05・S-03）", (
     const withoutOps = buildDetailView(makeDetail(ESTIMATED_FLIGHT), NAGAREYAMA);
     expect(valueOf(withoutOps, "経路", "運用方向")).toBe("判定中");
     expect(valueOf(withoutOps, "経路", "滑走路")).toBe("RWY22");
+  });
+});
+
+// AC-P3-20 / 21: 同じパネルの中で単位を揃える。根拠（evidence）は元から fpm なのでそのまま、
+// 飛行状態の「昇降率」を m/分 から fpm に直した（仕様 Q15 の改訂）
+describe("buildDetailView: 昇降率は根拠（evidence）と同じ単位・同じ数字（仕様 Q15）", () => {
+  // src/server/estimate/estimate.ts の verticalRateEvidence が実際に作る文字列（estimate.test.ts:146 が固定）
+  const DESCENT_EVIDENCE = "降下中 -704fpm";
+  const DESCENDING = makeFlight({
+    hex: "86e7a0",
+    callsign: "JAL38",
+    verticalRateFpm: -704,
+    estimate: {
+      phase: "arrival",
+      airport: { icao: "RJTT", name: "羽田" },
+      runway: "22",
+      confidence: 0.9,
+      evidence: ["方位のズレ 0.1°", "滑走路まで 10.7km", DESCENT_EVIDENCE],
+    },
+  });
+  const view = buildDetailView(makeDetail(DESCENDING), NAGAREYAMA);
+
+  it("飛行状態の「昇降率」は fpm（AC-P3-20）", () => {
+    expect(valueOf(view, "飛行状態", "昇降率")).toBe("-704fpm");
+  });
+
+  it("根拠の行はサーバーが作ったまま（AC-P3-21。クライアントで作り直さない）", () => {
+    expect(view.sections.at(-1)?.notes?.lines).toContain(DESCENT_EVIDENCE);
+  });
+
+  it("根拠の「降下中 -704fpm」と飛行状態の「-704fpm」が同じ数字を指す（同じパネルで単位が食い違わない）", () => {
+    const verticalRate = valueOf(view, "飛行状態", "昇降率");
+    expect(`降下中 ${verticalRate}`).toBe(view.sections.at(-1)?.notes?.lines.at(-1));
+  });
+
+  it("上昇・水平も根拠と同じ形（「+1500fpm」「0fpm」）", () => {
+    const climbing = buildDetailView(makeDetail(makeFlight({ hex: "c1", verticalRateFpm: 1500 })), NAGAREYAMA);
+    const level = buildDetailView(makeDetail(makeFlight({ hex: "l1", verticalRateFpm: 0 })), NAGAREYAMA);
+    expect(valueOf(climbing, "飛行状態", "昇降率")).toBe("+1500fpm");
+    expect(valueOf(level, "飛行状態", "昇降率")).toBe("0fpm");
+  });
+
+  it.each([
+    { altitude: "m", speed: "kmh" },
+    { altitude: "ft", speed: "kt" },
+    { altitude: "ft", speed: "kmh" },
+    { altitude: "m", speed: "kt" },
+  ] as const satisfies readonly Units[])("単位の設定（%o）を変えても昇降率は fpm のまま（F-09 の対象は高度と対地速度だけ）", (units) => {
+    const switched = buildDetailView(makeDetail(DESCENDING), NAGAREYAMA, undefined, units);
+    expect(valueOf(switched, "飛行状態", "昇降率")).toBe("-704fpm");
   });
 });
 
