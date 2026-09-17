@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Flight, NearbyResponse } from "../../shared/types.ts";
 import { nearbyParamsKey, type NearbyParams } from "./api.ts";
 import { buildRows, RADIUS_OPTIONS_KM, sortRows, summaryText, type SortMode } from "./flightRows.ts";
+import type { Units } from "./format.ts";
 import type { Location } from "./locationStore.ts";
 import {
   activeDescendantId,
@@ -149,6 +150,13 @@ describe("nearbyParamsFor（取得の条件）", () => {
     expect(nearbyParamsFor("main", undefined, 50, "passenger,cargo")).toBeUndefined();
   });
 
+  // 設定画面では半径・更新間隔を変えられる。止めずに続けて、戻ったときには新しい条件の結果が出ているようにする（W6）
+  it("設定画面の間は止めない（メイン画面と同じ条件）", () => {
+    expect(nearbyParamsFor("settings", NAGAREYAMA, 50, "passenger,cargo")).toStrictEqual(
+      nearbyParamsFor("main", NAGAREYAMA, 50, "passenger,cargo"),
+    );
+  });
+
   it("メイン画面では地点の緯度・経度と半径を渡す（標高は送らない）", () => {
     expect(nearbyParamsFor("main", NAGAREYAMA, 25, "passenger,cargo")).toStrictEqual({
       lat: 35.8709,
@@ -200,6 +208,24 @@ describe("listRows（一覧に出す行）", () => {
     const rows = listRows({ data: makeResponse([...flights, withoutRoute]), location: NAGAREYAMA, sortMode: "distance" });
     expect(rows).toHaveLength(3);
     expect(rows.find((row) => row.hex === "noroute")?.routeText).toBeUndefined();
+  });
+});
+
+describe("listRows: 表示の単位（AC-P2-72）", () => {
+  const FEET_AND_KNOTS: Units = { altitude: "ft", speed: "kt" };
+  const flights = [makeFlight({ hex: "unit00", groundSpeedKt: 250 })];
+  const rowsWith = (units?: Units) =>
+    listRows({ data: makeResponse(flights), location: NAGAREYAMA, sortMode: "distance", units });
+
+  it("渡した単位が行の高度・対地速度に出る（buildRows へそのまま通す）", () => {
+    expect(rowsWith(FEET_AND_KNOTS)).toEqual(sortRows(buildRows(flights, NAGAREYAMA, FEET_AND_KNOTS), "distance"));
+    expect(rowsWith(FEET_AND_KNOTS)[0]?.altitudeText).toBe("3,000ft");
+    expect(rowsWith(FEET_AND_KNOTS)[0]?.speedText).toBe("250kt");
+  });
+
+  it("単位を渡さなければ m・km/h（既定）", () => {
+    expect(rowsWith()[0]?.altitudeText).toBe("910m");
+    expect(rowsWith()[0]?.speedText).toBe("463km/h");
   });
 });
 

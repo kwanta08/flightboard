@@ -322,3 +322,66 @@ describe("createTrackStore: get の戻り値", () => {
     expect(t.store.size()).toBe(0);
   });
 });
+
+/**
+ * `points` は推定（並行滑走路の L/C/R 判別。AC-P3-05）が読む口。座標しか使わないので、
+ * `get` と違って**複製も期限切れの掃除もしない**。ここではその契約を固定する。
+ */
+describe("createTrackStore: points（推定に渡す座標）", () => {
+  const coordinates = (points: readonly { lat: number; lon: number }[]) =>
+    points.map(({ lat, lon }) => ({ lat, lon }));
+
+  it("保持していない hex は凍結した空配列（共有するので書き換えられない）", () => {
+    const t = setup();
+    expect(t.store.points("aaa111")).toEqual([]);
+    // 全呼び出しで同じ配列を使い回すので、誤って積まれないよう凍結してある
+    expect(Object.isFrozen(t.store.points("aaa111"))).toBe(true);
+  });
+
+  it("記録した点を古い順に返し、座標は get と同じ", () => {
+    const t = setup();
+    t.recordNow([flight("aaa111", { lat: 35, lon: 139 })]);
+    t.advance(1000);
+    t.recordNow([flight("aaa111", { lat: 35.1, lon: 139.1 })]);
+    t.advance(1000);
+    t.recordNow([flight("aaa111", { lat: 35.2, lon: 139.2 })]);
+
+    expect(coordinates(t.store.points("aaa111"))).toEqual([
+      { lat: 35, lon: 139 },
+      { lat: 35.1, lon: 139.1 },
+      { lat: 35.2, lon: 139.2 },
+    ]);
+    expect(coordinates(t.store.points("aaa111"))).toEqual(coordinates(t.store.get("aaa111")?.points ?? []));
+  });
+
+  it("hex の大文字・小文字は区別しない（get と同じ）", () => {
+    const t = setup();
+    t.recordNow([flight("abc123", { lat: 35, lon: 139 })]);
+    expect(coordinates(t.store.points("ABC123"))).toEqual([{ lat: 35, lon: 139 }]);
+    expect(t.store.points("ABC123")).toBe(t.store.points("abc123"));
+  });
+
+  it("複製を返さない（意図の固定。呼び出し側は書き換えてはいけない）", () => {
+    const t = setup();
+    t.recordNow([flight("aaa111", { lat: 35, lon: 139 })]);
+    const first = t.store.points("aaa111");
+    expect(t.store.points("aaa111")).toBe(first);
+
+    // 後から積んだ点は、前に返した配列からも見える（＝内部の配列をそのまま返している）
+    t.advance(1000);
+    t.recordNow([flight("aaa111", { lat: 35.1, lon: 139.1 })]);
+    expect(first).toHaveLength(2);
+  });
+
+  it("prune を呼ばない（期限切れの点も、次の record まで残る）", () => {
+    // 掃除を省いてよいのは、呼び出し側が `record`（＝ prune）の直後か、その数秒後に呼ぶため
+    // （plan 20260917-parallel-runway-and-fpm §「仮決めした解釈」）。ここではその設計を固定する
+    const t = setup();
+    t.recordNow([flight("aaa111", { lat: 35, lon: 139 })]);
+    t.advance(11 * MINUTE);
+
+    expect(t.store.points("aaa111")).toHaveLength(1);
+    expect(t.store.get("aaa111")).toBeUndefined(); // get は掃除するので消えている
+    expect(t.store.points("aaa111")).toEqual([]); // 掃除の後は points からも消える
+  });
+});

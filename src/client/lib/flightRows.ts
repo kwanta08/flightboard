@@ -1,13 +1,15 @@
 // 一覧の行（AC-B4〜B7）。判断と値の計算はここに置き、.tsx は描画だけにする。
 // 距離・方位・仰角は受信した位置で計算する（補間した位置は地図のアイコンにだけ使う）。
-import { aircraftAltitudeM, bearingDeg, elevationAngleDeg, haversineKm } from "../../shared/geo.ts";
+import { aircraftAltitudeFt, bearingDeg, elevationAngleDeg, FT_TO_M, haversineKm } from "../../shared/geo.ts";
 import type { Flight } from "../../shared/types.ts";
+import { buildEstimateBadge, type EstimateBadge } from "./estimateView.ts";
 import {
   airportShortLabel,
   DASH,
+  DEFAULT_UNITS,
   ELEVATION_ONE_DECIMAL_BELOW_DEG,
   finiteOrUndefined,
-  formatAltitudeM,
+  formatAltitudeFt,
   formatBearing,
   formatDistanceKm,
   formatElevationDeg,
@@ -17,6 +19,7 @@ import {
   isFiniteNumber,
   nonEmpty,
   verticalTrend,
+  type Units,
   type VerticalTrend,
 } from "./format.ts";
 import type { Location } from "./locationStore.ts";
@@ -43,7 +46,13 @@ export type FlightRow = {
   /** "HND Tokyo → FUK Fukuoka"。route が無ければ undefined（この段だけを省く） */
   routeText?: string;
   typeText: string;
-  /** 機体の高度 h（m）。altitudeGeomFt 優先、無ければ altitudeBaroFt */
+  /**
+   * 機体の高度 h（ft）。altitudeGeomFt 優先、無ければ altitudeBaroFt（受信した値そのまま）。
+   * 高度の表示（`altitudeText`・推定バッジの「巡航」）はこの値から作る。
+   * m に換算してから ft に戻すと、25ft 刻みの受信値（x25 / x75）が 10ft 単位の丸めの境界で逆向きに丸まり、詳細と食い違う
+   */
+  altitudeFt?: number;
+  /** 機体の高度 h（m）。`altitudeFt` の換算。表示の単位に関わらず m（並び替えのキーと仰角の計算に使う） */
   altitudeM?: number;
   altitudeText: string;
   speedText: string;
@@ -63,6 +72,8 @@ export type FlightRow = {
   isCargo: boolean;
   /** kind が cargo なら "貨物"（CARGO_BADGE_LABEL）、それ以外は undefined */
   badgeText?: string;
+  /** 経路の推定バッジ（AC-P2-50）。推定が無い機体では undefined（バッジを出さない） */
+  estimateBadge?: EstimateBadge;
 };
 
 /** 見えにくいとする仰角の上限（度、この値未満が hard）。仰角の表示を小数 1 桁にする境界と同じ値 */
@@ -99,10 +110,13 @@ export function visibilityLabel(visibility: Visibility | undefined): string | un
   return visibility === undefined ? undefined : VISIBILITY_LABELS[visibility];
 }
 
-function buildRow(flight: Flight, observer: Observer): FlightRow {
+function buildRow(flight: Flight, observer: Observer, units: Units): FlightRow {
   const target = { lat: flight.position.lat, lon: flight.position.lon };
   const distanceKm = haversineKm(observer, target);
-  const altitudeM = finiteOrUndefined(aircraftAltitudeM(flight.position));
+  // 高度は受信した ft を 1 つの元にし、m（仰角と並び替え）はその換算で持つ。
+  // 表示は元の ft から作る（m を経由すると 25ft 刻みの値が詳細と違う向きに丸まる）
+  const altitudeFt = finiteOrUndefined(aircraftAltitudeFt(flight.position));
+  const altitudeM = altitudeFt === undefined ? undefined : altitudeFt * FT_TO_M;
   const elevationDeg =
     altitudeM === undefined || !isFiniteNumber(distanceKm)
       ? undefined
@@ -124,9 +138,10 @@ function buildRow(flight: Flight, observer: Observer): FlightRow {
     routeText:
       route === undefined ? undefined : `${airportShortLabel(route.origin)} → ${airportShortLabel(route.destination)}`,
     typeText: typeDisplayName(flight.typeCode),
+    altitudeFt,
     altitudeM,
-    altitudeText: formatAltitudeM(altitudeM),
-    speedText: formatSpeedKt(flight.groundSpeedKt),
+    altitudeText: formatAltitudeFt(altitudeFt, units.altitude),
+    speedText: formatSpeedKt(flight.groundSpeedKt, units.speed),
     trend,
     trendText: formatTrend(trend),
     distanceKm,
@@ -138,12 +153,18 @@ function buildRow(flight: Flight, observer: Observer): FlightRow {
     visibilityLabel: visibilityLabel(visibility),
     isCargo,
     badgeText: isCargo ? CARGO_BADGE_LABEL : undefined,
+    // 高度は行が取り出した altitudeFt をそのまま渡す（同じ式を二度評価しない）。
+    // バッジの高度も行と同じ値・同じ単位・同じ丸めで出す（一覧の「880ft」とバッジの「巡航 880ft」を食い違わせない）
+    estimateBadge: buildEstimateBadge(flight.estimate, altitudeFt, units.altitude),
   };
 }
 
-/** 機体を一覧の行にする。入力の機体をすべて行にし、件数を減らさない（順序は入力のまま） */
-export function buildRows(flights: readonly Flight[], observer: Observer): FlightRow[] {
-  return flights.map((flight) => buildRow(flight, observer));
+/**
+ * 機体を一覧の行にする。入力の機体をすべて行にし、件数を減らさない（順序は入力のまま）。
+ * `units` は高度・対地速度の表示の単位（省くと既定の m・km/h。F-09・AC-P2-72）
+ */
+export function buildRows(flights: readonly Flight[], observer: Observer, units: Units = DEFAULT_UNITS): FlightRow[] {
+  return flights.map((flight) => buildRow(flight, observer, units));
 }
 
 function compareText(a: string, b: string): number {

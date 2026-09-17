@@ -23,12 +23,18 @@ function createBrowserNearbyPoller(): Poller<NearbyParams> {
 /**
  * 条件 `params` で周辺の機体を自動更新し、その状態を返す。
  * `params` が undefined の間は開始しない。最初に決まったら開始し、以後は値（緯度・経度・半径・種類）が変わったときだけ条件を渡す。
- * アンマウント（と `params` が undefined に戻ったとき）に停止する
+ * アンマウント（と `params` が undefined に戻ったとき）に停止する。
+ * `intervalMs`（設定の更新間隔。F-06）を変えると、再読み込みなしで実行中のポーリングに反映する（AC-P2-74）
  */
-export function useNearby(params: NearbyParams | undefined): PollerState {
+export function useNearby(params: NearbyParams | undefined, intervalMs?: number): PollerState {
   const [poller] = useState(createBrowserNearbyPoller);
   const key = nearbyParamsKey(params);
   const hasParams = key !== undefined;
+
+  // 間隔は開始より先に渡す（下の開始より前に宣言し、最初の刻みから設定の間隔にする）
+  useEffect(() => {
+    if (intervalMs !== undefined) poller.setIntervalMs(intervalMs);
+  }, [poller, intervalMs]);
 
   // 条件の値が変わったら渡す（オブジェクトの同一性ではなく key で比べる）。
   // 開始前は覚えるだけ、開始後は poller の規則で即 1 本送る。下の開始より先に宣言し、条件が決まった描画では start の前に呼ばれる

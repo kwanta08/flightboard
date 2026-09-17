@@ -230,6 +230,15 @@ describe("fetchNearby", () => {
     expect((error as ApiRequestError).status).toBe(200);
   });
 
+  // ヘッダーの運用方向（AC-P2-52）が読む配列なので、欠けた応答を NearbyResponse として通さない
+  it("airportOps の無い応答も形が違うものとして ApiRequestError", async () => {
+    const { airportOps: _airportOps, ...withoutAirportOps } = NEARBY;
+    const { fetch } = fakeFetch(() => jsonResponse(withoutAirportOps));
+    const error = await caught(fetchNearby(PARAMS, { fetch }));
+    expect(error).toBeInstanceOf(ApiRequestError);
+    expect((error as ApiRequestError).status).toBe(200);
+  });
+
   it("kinds が空なら要求を送らず、status の無い ApiRequestError で失敗する（サーバーが 400 を返すため）", async () => {
     const { fetch, calls } = fakeFetch(() => jsonResponse(NEARBY));
     const error = await caught(fetchNearby({ ...PARAMS, kinds: [] }, { fetch }));

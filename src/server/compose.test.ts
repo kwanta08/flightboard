@@ -3,9 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { destinationPoint } from "../shared/geo.ts";
 import type { Flight } from "../shared/types.ts";
 import { composeApp } from "./compose.ts";
 import type { ComposeAppOptions } from "./compose.ts";
+import { RUNWAY_ENDS } from "./data/runways.ts";
+import { runwayBearingDeg } from "./estimate/runway.ts";
 import type { FetchLike } from "./providers/provider.ts";
 
 const T0 = Date.UTC(2026, 8, 15, 0, 0, 0);
@@ -20,7 +23,11 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-/** 受けた要求の URL を記録し、`respond` の応答を返す偽の fetch と、進められる偽の時計・即座に解決する待機で合成する */
+/**
+ * 受けた要求の URL を記録し、`respond` の応答を返す偽の fetch と、進められる偽の時計・即座に解決する待機で合成する。
+ * 空港中心の取得は既定で無効（`airportOps: false`）にし、上流への要求を観測点の 1 系統だけに保つ。
+ * 有効にしたときの配線は「空港中心の取得」の describe で別に確かめる
+ */
 function setup(respond: (url: URL) => Response, options: Omit<ComposeAppOptions, "fetch" | "now" | "sleep"> = {}) {
   let time = T0;
   const urls: URL[] = [];
@@ -29,7 +36,7 @@ function setup(respond: (url: URL) => Response, options: Omit<ComposeAppOptions,
     urls.push(parsed);
     return respond(parsed);
   };
-  const app = composeApp({ fetch, now: () => time, sleep: async () => undefined, ...options });
+  const app = composeApp({ fetch, now: () => time, sleep: async () => undefined, airportOps: false, ...options });
   return {
     app,
     urls,
@@ -156,5 +163,166 @@ describe("composeApp: ビルド済みの画面が無いときの案内（W1 MINO
 
     expect(fileExists).not.toHaveBeenCalled();
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("composeApp: 空港中心の取得（AC-P2-61・提供元の共有）", () => {
+  /** 待っているマイクロタスクを流す（空港中心の取得は応答を待たせないので、決着させてから確かめる） */
+  function flush(): Promise<void> {
+    return new Promise((resolve) => setImmediate(resolve));
+  }
+
+  /** 位置の上流への要求だけを取り出す（adsbdb・planespotters を除く） */
+  function positionUrls(urls: URL[]): URL[] {
+    return urls.filter((url) => url.hostname !== "api.adsbdb.com" && url.hostname !== "api.planespotters.net");
+  }
+
+  it("既定（指定しない）では有効で、/api/nearby の処理中に羽田中心・半径 60NM の取得が 1 本だけ出る", async () => {
+    const urls: URL[] = [];
+    const fetch: FetchLike = async (url) => {
+      urls.push(new URL(url));
+      return jsonResponse({ ac: [] });
+    };
+    const app = composeApp({ fetch, now: () => T0, sleep: async () => undefined });
+
+    const res = await app.request(NEARBY);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ airportOps: [] });
+    await flush();
+
+    // 観測点（半径 27NM）1 本 ＋ 空港（半径 60NM）1 本 = 2 本
+    expect(positionUrls(urls).map((url) => url.pathname)).toEqual([
+      "/v2/point/35.87/139.93/27",
+      "/v2/point/35.5523/139.78/60",
+    ]);
+  });
+
+  it("airportOps: false なら空港中心の取得をせず、上流へ出るのは観測点の 1 本だけ", async () => {
+    const t = setup(() => jsonResponse({ ac: [] }), { airportOps: false });
+
+    const { res } = await t.get(NEARBY);
+    expect(res.status).toBe(200);
+    await flush();
+    expect(positionUrls(t.urls).map((url) => url.pathname)).toEqual(["/v2/point/35.87/139.93/27"]);
+  });
+
+  it("観測点の取得で 429 になった提供元は空港中心の取得でも試さない（同じ提供元インスタンスを共有する）", async () => {
+    const t = setup(
+      (url) => (url.hostname === "api.adsb.lol" ? new Response("slow down", { status: 429 }) : jsonResponse({ ac: [] })),
+      { airportOps: true },
+    );
+
+    const { res } = await t.get(NEARBY);
+    expect(res.status).toBe(200);
+    await flush();
+
+    // 観測点: adsb.lol が 429 → adsb.fi で取得。空港: 休止中の adsb.lol を飛ばして adsb.fi から取得
+    expect(positionUrls(t.urls).map((url) => [url.hostname, url.pathname])).toEqual([
+      ["api.adsb.lol", "/v2/point/35.87/139.93/27"],
+      ["opendata.adsb.fi", "/api/v3/lat/35.87/lon/139.93/dist/27"],
+      ["opendata.adsb.fi", "/api/v3/lat/35.5523/lon/139.78/dist/60"],
+    ]);
+  });
+
+  it("空港中心の取得は次の要求まで TTL（30 秒）あけ、その間は成田を 1 本だけ取る", async () => {
+    const t = setup(() => jsonResponse({ ac: [] }), { airportOps: true });
+
+    await t.get(NEARBY);
+    await flush();
+    t.advance(5000); // 位置のキャッシュ（5 秒）を外す
+    await t.get(NEARBY);
+    await flush();
+    t.advance(5000);
+    await t.get(NEARBY); // 羽田・成田とも TTL 内なので空港取得は出ない
+    await flush();
+
+    expect(positionUrls(t.urls).map((url) => url.pathname)).toEqual([
+      "/v2/point/35.87/139.93/27",
+      "/v2/point/35.5523/139.78/60",
+      "/v2/point/35.87/139.93/27",
+      "/v2/point/35.7647/140.386/60",
+      "/v2/point/35.87/139.93/27",
+    ]);
+  });
+});
+
+/**
+ * W10 MINOR-3: `composeApp` が `createAirportOpsSource` に**行と同じ `getRoute`** を渡している配線（`compose.ts`）を縛る。
+ * この 1 行が落ちると、集計だけが adsbdb のルートを見ない推定になり、同じ応答の行と食い違う（W9 MAJOR-2 の再発）。
+ * 上流には接続せず、偽の fetch で adsbdb の応答（RJTT → RJFF＝「羽田発」）を返す
+ */
+describe("composeApp: 運用方向の集計が行と同じルートを見る（W9 MAJOR-2 の配線）", () => {
+  /** RJTT 22 の進入側の延長線上 8km に**合成**した機体（幾何では「RWY22 へ進入」になる） */
+  function approachingRjtt22(): Record<string, unknown> {
+    const end = RUNWAY_ENDS.find((other) => other.icao === "RJTT" && other.ident === "22")!;
+    const bearing = runwayBearingDeg(end, RUNWAY_ENDS)!;
+    const position = destinationPoint(end, bearing + 180, 8);
+    return {
+      hex: "abc123",
+      flight: "JAL001  ",
+      t: "B789",
+      alt_baro: 2000,
+      lat: position.lat,
+      lon: position.lon,
+      track: ((bearing % 360) + 360) % 360,
+      baro_rate: -704,
+      seen_pos: 1,
+    };
+  }
+
+  /** 進行方向・昇降率が無いので幾何では何も決まらない機体（1 回目。ルートを積ませるためだけに返す） */
+  const LEVEL_FLIGHT = { hex: "abc123", flight: "JAL001  ", t: "B789", alt_baro: 10000, lat: 35.88, lon: 139.94, seen_pos: 1 };
+
+  /** adsbdb の「羽田発・福岡行き」の応答（航空会社は null。M2-1） */
+  const HANEDA_DEPARTURE = {
+    response: {
+      flightroute: {
+        callsign: "JAL001",
+        airline: null,
+        origin: { icao_code: "RJTT", name: "Tokyo Haneda International Airport" },
+        destination: { icao_code: "RJFF", name: "Fukuoka Airport" },
+      },
+    },
+  };
+
+  /** ルート照会の worker が決着するまで待つ（要求の送信と応答の解釈に数ティックかかる） */
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  it("1 回目でルートを積み、2 回目は行が「出発・滑走路なし」になり、集計も RWY22 着陸として数えない", async () => {
+    let observations = 0;
+    const t = setup(
+      (url) => {
+        if (url.hostname === "api.adsbdb.com") return jsonResponse(HANEDA_DEPARTURE);
+        if (url.hostname !== "api.adsb.lol") return unexpectedUpstream();
+        // 空港中心の取得（半径 60NM）は空で返し、観測点の取得だけで時系列を作る
+        if (url.pathname.endsWith("/60")) return jsonResponse({ ac: [] });
+        observations += 1;
+        return jsonResponse({ ac: [observations === 1 ? LEVEL_FLIGHT : approachingRjtt22()] });
+      },
+      { airportOps: true },
+    );
+
+    // 1 回目: ルートはまだキャッシュに無く、幾何でも何も決まらない
+    const first = await t.get(NEARBY);
+    expect((first.body.flights as Flight[]).map((f) => f.estimate)).toEqual([undefined]);
+    expect(first.body.airportOps).toEqual([]);
+
+    await settle(); // 積んだルート照会を決着させる
+    t.advance(6000); // 位置のキャッシュ（5 秒）を外す
+
+    // 2 回目: 同じ機体が RWY22 へ進入中に見えるが、adsbdb は「羽田発」と言っている
+    const second = await t.get(NEARBY);
+    const estimate = (second.body.flights as Flight[]).find((f) => f.hex === "abc123")?.estimate;
+    // 行は AC-P2-16 どおり「出発・滑走路なし」（route 由来の phase）
+    expect(estimate?.phase).toBe("departure");
+    expect(estimate?.runway).toBeUndefined();
+    // 集計も同じ入力で決まる（`getRoute` を渡していなければ「RWY22 着陸 1 機・南風運用」になる）
+    expect(second.body.airportOps).toEqual([]);
+    // 集計のために adsbdb への照会は増やさない（キャッシュを引くだけ）
+    expect(t.urls.filter((url) => url.hostname === "api.adsbdb.com").map((url) => url.pathname)).toEqual([
+      "/v0/callsign/JAL001",
+    ]);
   });
 });

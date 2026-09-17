@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Hono } from "hono";
 import { createAdsbdbClient } from "./adsbdb/client.ts";
 import { createEnrichment } from "./adsbdb/enrichment.ts";
+import { createAirportOpsSource } from "./airportOpsSource.ts";
 import { createApp } from "./app.ts";
 import { createPhotoSource } from "./photos/planespotters.ts";
 import { createFallbackProvider } from "./providers/fallback.ts";
@@ -24,6 +25,11 @@ export type ComposeAppOptions = {
   staticRoot?: string;
   /** ファイルが存在するか（`staticRoot` の `index.html` の確認に使う。既定 `node:fs` の `existsSync`） */
   fileExists?: (path: string) => boolean;
+  /**
+   * 空港中心の取得と運用方向の集計を有効にするか（既定 true）。
+   * false にすると上流へ出るのは観測点の取得だけになり、`/api/nearby` の `airportOps` は常に空配列になる
+   */
+  airportOps?: boolean;
 };
 
 /** `staticRoot` に `index.html` が無いときに console.error に出す案内 */
@@ -55,5 +61,12 @@ export function composeApp(options: ComposeAppOptions = {}): Hono {
   // 機体写真は planespotters（撮影者名とリンクが取れる提供元。仕様 §13）
   const photos = createPhotoSource({ fetch: fetchImpl, now });
   const tracks = createTrackStore({ now });
-  return createApp({ positions, enrichment, photos, tracks, now, staticRoot });
+  // 空港中心の取得は観測点と同じ提供元インスタンスを共有する（429 の休止状態を共有し、無駄撃ちしない）。
+  // ルートの引き方も `createApp` に渡すのと同じ `enrichment` にする（集計の推定を各行の estimate と同じ入力で
+  // 組み立てる。キャッシュを引くだけで adsbdb への照会は増やさない。W9 MAJOR-2）
+  const airportOps =
+    options.airportOps === false
+      ? undefined
+      : createAirportOpsSource({ positions, now, tracks, getRoute: (callsign) => enrichment.getRoute(callsign) });
+  return createApp({ positions, enrichment, photos, tracks, airportOps, now, staticRoot });
 }

@@ -1,6 +1,7 @@
 // 機体の詳細パネル（AC-B12・AC-B8・AC-B13）。地図ペインの右側に重ねて出す（フォーカスは奪わない）。
 // 表示の判断と文言は lib/detailView.ts・lib/detailState.ts が決め、ここは描画と閉じる操作の受け渡しだけを行う。
-import { useMemo, type KeyboardEvent } from "react";
+import { useId, useMemo, type KeyboardEvent } from "react";
+import type { AirportOps } from "../../shared/types.ts";
 import type { DetailState } from "../lib/detailState.ts";
 import {
   DETAIL_CLOSE_LABEL,
@@ -9,16 +10,22 @@ import {
   detailPanelContent,
   isCloseKey,
   ROUTE_PROGRESS_LABEL,
+  type DetailNotes,
   type DetailRoute,
   type DetailView,
 } from "../lib/detailView.ts";
 import type { Observer } from "../lib/flightRows.ts";
+import type { Units } from "../lib/format.ts";
 
 type DetailPanelProps = {
   /** 選択中の機体の詳細の取得状態（useFlightDetail） */
   state: DetailState;
   /** 観測地点（自分との関係の計算に使う） */
   observer: Observer;
+  /** 空港の運用方向の集計（`/api/nearby` の `airportOps`）。「経路」の区分の「運用方向」に使う */
+  airportOps?: readonly AirportOps[];
+  /** 高度・対地速度の表示の単位（設定。渡さなければ既定の m・km/h。AC-P2-72） */
+  units?: Units;
   /** 閉じるボタンとパネル内の Esc（詳細を閉じる＝選択を解除する） */
   onClose(): void;
 };
@@ -42,6 +49,29 @@ function RouteBlock({ route }: { route: DetailRoute }) {
       ) : null}
       <p className="detail-note">{route.note}</p>
     </div>
+  );
+}
+
+/**
+ * 区分に添える補足の一覧（「経路」の区分の根拠。S-03）。
+ * 何の一覧かが目視でも読み上げでも分かるように見出し（「根拠」）を描き、その見出しで一覧に名前を付ける
+ * （list ロールは名前付けできる）。同じ文が並びうるので位置で key を付ける（並べ替えも編集もしない一覧）
+ */
+function SectionNotes({ notes }: { notes: DetailNotes }) {
+  const labelId = useId();
+  return (
+    <>
+      <h4 className="detail-notes-label" id={labelId}>
+        {notes.label}
+      </h4>
+      <ul className="detail-notes" aria-labelledby={labelId}>
+        {notes.lines.map((line, index) => (
+          <li key={index} className="detail-note-item">
+            {line}
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -78,14 +108,19 @@ function DetailViewBody({ view }: { view: DetailView }) {
               </div>
             ))}
           </dl>
+          {/* 根拠は「経路」の区分だけが持つ（無い区分では描かない） */}
+          {section.notes !== undefined && section.notes.lines.length > 0 ? <SectionNotes notes={section.notes} /> : null}
         </section>
       ))}
     </>
   );
 }
 
-export function DetailPanel({ state, observer, onClose }: DetailPanelProps) {
-  const content = useMemo(() => detailPanelContent(state, observer), [state, observer]);
+export function DetailPanel({ state, observer, airportOps, units, onClose }: DetailPanelProps) {
+  const content = useMemo(
+    () => detailPanelContent(state, observer, airportOps, units),
+    [state, observer, airportOps, units],
+  );
 
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (!isCloseKey(event.key)) return;

@@ -54,6 +54,13 @@ export class UpstreamError extends Error {
 /** 上流の半径上限（海里） */
 export const MAX_UPSTREAM_NM = 250;
 
+/**
+ * 位置の最終受信からこの秒数を超えた機体は使わない（ちょうどは使う）。
+ * `app.ts`（応答に載せる機体の絞り込み）と `airportOpsSource.ts`（運用方向の集計に流す機体）が同じ値を見るので、
+ * どちらにも依存しないここに置く（集計・航跡の側が HTTP アプリを import しないようにするため）。
+ */
+export const MAX_SEEN_POS_SEC = 60;
+
 /** km → 上流へ渡す海里（切り上げ、250 で頭打ち） */
 export function kmToUpstreamNm(km: number): number {
   return Math.min(Math.ceil(km / 1.852), MAX_UPSTREAM_NM);

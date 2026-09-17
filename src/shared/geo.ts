@@ -36,6 +36,48 @@ export function bearingDeg(from: LatLon, to: LatLon): number {
   return normalizeDeg(Math.atan2(y, x) * RAD_TO_DEG);
 }
 
+/**
+ * from から方位 bearingDeg（度、真北 0・時計回り）へ distanceKm だけ進めた点（大円上の前進）。
+ * bearingDeg の逆算（`bearingDeg(from, destinationPoint(from, b, d)) === b`）が成り立つ。
+ * 経度は [-180, 180) に正規化する。距離が 0 なら from と同じ点。
+ */
+export function destinationPoint(from: LatLon, bearingDeg: number, distanceKm: number): LatLon {
+  const delta = distanceKm / EARTH_RADIUS_KM;
+  const theta = bearingDeg * DEG_TO_RAD;
+  const phi0 = from.lat * DEG_TO_RAD;
+  const sinPhi = Math.sin(phi0) * Math.cos(delta) + Math.cos(phi0) * Math.sin(delta) * Math.cos(theta);
+  const phi = Math.asin(sinPhi);
+  const dLambda = Math.atan2(
+    Math.sin(theta) * Math.sin(delta) * Math.cos(phi0),
+    Math.cos(delta) - Math.sin(phi0) * sinPhi,
+  );
+  const lon = from.lon + dLambda * RAD_TO_DEG;
+  return { lat: phi * RAD_TO_DEG, lon: normalizeDeg(lon + 180) - 180 };
+}
+
+/**
+ * from → to の大円に対する point の横ずれ（km）。符号は持たせず絶対値で返す。
+ * `dxt = |asin( sin δ₁₃ · sin(θ₁₃ − θ₁₂) )| · R`（δ₁₃ = from → point の角距離、θ₁₃ / θ₁₂ = from から見た方位）。
+ *
+ * 測るのは**線分ではなく大円**なので、from と to の外側へ延ばした延長線上の点も 0km になる
+ * （滑走路の中心線からのずれを、進入側でも出発側でも同じ式で測るため）。
+ *
+ * **前提**: from と to は別の点で、互いに対蹠点でないこと（どちらの場合も大円が一意に定まらない）。
+ * 同一点のときだけ特別扱いし、**point から from までの距離**を返す。これは
+ * 「from を通る**どの**大円に対する横ずれよりも大きい上界」であって、横ずれそのものではない
+ * （0 を返すと「中心線に乗っている」と読めてしまうため、大きい側に倒す。
+ * ただし最小比較で必ず負ける保証はない — from から近い点なら上界も小さいので勝ちうる）。
+ */
+export function crossTrackKm(point: LatLon, from: LatLon, to: LatLon): number {
+  if (from.lat === to.lat && from.lon === to.lon) {
+    return haversineKm(point, from);
+  }
+  const delta13 = haversineKm(from, point) / EARTH_RADIUS_KM;
+  const theta13 = bearingDeg(from, point) * DEG_TO_RAD;
+  const theta12 = bearingDeg(from, to) * DEG_TO_RAD;
+  return Math.abs(Math.asin(Math.sin(delta13) * Math.sin(theta13 - theta12))) * EARTH_RADIUS_KM;
+}
+
 export const JA_16_DIRECTIONS = [
   "北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東",
   "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西",

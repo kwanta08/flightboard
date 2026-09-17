@@ -91,6 +91,18 @@ function FlightRowContent({ row }: { row: FlightRow }) {
           </>
         ) : null}
       </div>
+      {/* 経路の推定バッジ（AC-P2-50・AC-P2-51）。推定の無い機体では行ごと出さない。
+          ボタン・リンクにしないので Tab の停止点は増えない。
+          「推定 」（srPrefix）は不可視の文字として text の前に置く（素の span は WAI-ARIA 1.2 の generic ロールで
+          名前付けが禁止されているので aria-label は使わない）。読み上げられる名前は srPrefix ＋ text */}
+      {row.estimateBadge !== undefined ? (
+        <div className="flight-row-line flight-row-estimate">
+          <span className={row.estimateBadge.className}>
+            <span className="visually-hidden">{row.estimateBadge.srPrefix}</span>
+            {row.estimateBadge.text}
+          </span>
+        </div>
+      ) : null}
     </>
   );
 }

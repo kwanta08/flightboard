@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { CREDITS, DISCLAIMER, OSM_ATTRIBUTION, OSM_TILE_URL } from "./credits.ts";
 
 describe("CREDITS", () => {
-  // AC-B3 の 6 つの提供元。各クレジットの文言に含まれるべき文字列
+  // AC-B3 の 6 つの提供元と、Phase 2 で滑走路データに使う OurAirports（AC-P2-06）。
+  // 各クレジットの文言に含まれるべき文字列
   it.each([
     ["adsb.lol", ["adsb.lol", "ODbL 1.0"]],
     ["adsb.fi", ["adsb.fi"]],
     ["OpenSky Network", ["OpenSky Network"]],
     ["adsbdb", ["adsbdb"]],
+    ["OurAirports（滑走路データ）", ["OurAirports", "パブリックドメイン"]],
     ["Planespotters.net（写真）", ["写真", "Planespotters.net"]],
     ["OpenStreetMap", ["© OpenStreetMap contributors"]],
   ] as const)("%s のクレジットがある", (_name, fragments) => {
@@ -17,6 +19,10 @@ describe("CREDITS", () => {
   it("adsb.fi はホームページ https://adsb.fi へリンクする", () => {
     const adsbfi = CREDITS.find((credit) => credit.label.includes("adsb.fi"));
     expect(adsbfi?.href).toBe("https://adsb.fi");
+  });
+
+  it("OurAirports は https://ourairports.com へリンクする（仕様 §13）", () => {
+    expect(CREDITS.find((credit) => credit.id === "ourairports")?.href).toBe("https://ourairports.com");
   });
 
   it("id は重複せず、リンク先はすべて https", () => {

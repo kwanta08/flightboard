@@ -1,7 +1,7 @@
 // 地点のセットアップ画面の判断（AC-B2・S-01・plan p1b M3-4）。SetupScreen.tsx と App.tsx はこの結果を描画するだけ。
 import type { LatLon } from "../../shared/geo.ts";
 import type { GeolocationFailureReason, GeolocationResult } from "./geolocation.ts";
-import { parseElevationInput, type Location } from "./locationStore.ts";
+import { parseElevationInput, type Location, type LocationEditMode } from "./locationStore.ts";
 
 export type { LatLon };
 
@@ -58,11 +58,31 @@ export type InitialSetupState = SetupState & {
  */
 export type SetupTransition = { state: SetupState; recenter?: LatLon };
 
+/** セットアップ画面の見出し（［変更］と［地点を追加］で見分けが付くようにする。region のラベルも兼ねる） */
+export const SETUP_TITLE = "地点の設定";
+export const SETUP_ADD_TITLE = "地点を追加";
+
+/** セットアップ画面の見出しの文言。開いた目的が「足す」なら「地点を追加」 */
+export function setupTitle(mode: LocationEditMode = "change"): string {
+  return mode === "add" ? SETUP_ADD_TITLE : SETUP_TITLE;
+}
+
 /**
- * セットアップ画面の初期状態。現在値があれば（［変更］で開いた）そこを中心・ピン・標高にし、Geolocation は要求しない。
- * 無ければ（初回）仮の中心・ピン無し・標高「0」で Geolocation を要求し、結果待ちにする
+ * セットアップ画面の初期状態。
+ * - `add`（［地点を追加］で開いた）: 現在値があればその周りを見せるが**ピンは置かず**、標高は「0」。Geolocation も要求しない
+ *   （現在値のピンを置くと、何もせず確定して同じ座標の地点が増えてしまう。ピンが無い間は確定できない）
+ * - `change` で現在値があれば（［変更］で開いた）そこを中心・ピン・標高にし、Geolocation は要求しない
+ * - `change` で現在値が無ければ（初回）仮の中心・ピン無し・標高「0」で Geolocation を要求し、結果待ちにする
  */
-export function initialSetupState(current?: Location): InitialSetupState {
+export function initialSetupState(current?: Location, mode: LocationEditMode = "change"): InitialSetupState {
+  if (mode === "add") {
+    return {
+      center: current === undefined ? { ...DEFAULT_CENTER } : { lat: current.lat, lon: current.lon },
+      geolocation: { phase: "idle" },
+      elevationText: "0",
+      requestGeolocation: false,
+    };
+  }
   if (current === undefined) {
     return {
       center: { ...DEFAULT_CENTER },
@@ -88,19 +108,31 @@ export function canCancelSetup(current?: Location): boolean {
   return current !== undefined;
 }
 
-export type AppScreen = "setup" | "main";
+export type AppScreen = "setup" | "main" | "settings";
 
-/** 出す画面。地点が無い（保存値が無い・不正）か、［変更］で編集中ならセットアップ */
-export function appScreen(location: Location | undefined, editing: boolean): AppScreen {
-  return location === undefined || editing ? "setup" : "main";
+/**
+ * 出す画面。地点が無い（保存値が無い・不正）か、［変更］［地点を追加］で編集中ならセットアップ。
+ * 地点があり編集中でなく、［設定］を開いていれば設定画面（S-04）。
+ * セットアップを設定画面より優先するので、設定画面から地点を編集して戻ると設定画面に戻る
+ */
+export function appScreen(location: Location | undefined, editing: boolean, settingsOpen = false): AppScreen {
+  if (location === undefined || editing) {
+    return "setup";
+  }
+  return settingsOpen ? "settings" : "main";
 }
 
-/** 画面が切り替わったときにフォーカスを移す先。setup-heading: セットアップの見出し / location-change: ［地点を変更］ボタン */
-export type ScreenFocusTarget = "setup-heading" | "location-change";
+/**
+ * 画面が切り替わったときにフォーカスを移す先。
+ * setup-heading: セットアップの見出し / settings-heading: 設定の見出し /
+ * location-change: ［地点を変更］ボタン / settings-button: ヘッダーの［設定］ボタン
+ */
+export type ScreenFocusTarget = "setup-heading" | "settings-heading" | "location-change" | "settings-button";
 
 /**
  * 画面の切り替えでフォーカスを移す先。初回の表示（前の画面が無い）と、画面が変わらないときは移さない
- * （切り替えで押したボタンが消えてフォーカスが失われるのを防ぐ）
+ * （切り替えで押したボタンが消えてフォーカスが失われるのを防ぐ）。
+ * メイン画面へ戻るときは、開いていた画面を開いたボタン（設定なら［設定］、セットアップなら［地点を変更］）へ戻す
  */
 export function focusTargetOnScreenChange(
   previous: AppScreen | undefined,
@@ -109,7 +141,13 @@ export function focusTargetOnScreenChange(
   if (previous === undefined || previous === next) {
     return undefined;
   }
-  return next === "setup" ? "setup-heading" : "location-change";
+  if (next === "setup") {
+    return "setup-heading";
+  }
+  if (next === "settings") {
+    return "settings-heading";
+  }
+  return previous === "settings" ? "settings-button" : "location-change";
 }
 
 /**

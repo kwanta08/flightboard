@@ -1,5 +1,6 @@
-// 詳細パネルの表示の判断と文言（AC-B12・AC-B13、F-05 の Phase 1 分・S-03）。単位は m・km/h 固定。
-// DetailPanel.tsx はこの結果を描画するだけにする。取得状態の遷移は lib/detailState.ts。
+// 詳細パネルの表示の判断と文言（AC-B12・AC-B13、F-05・S-03）。高度と対地速度は設定の単位で出す（F-09・AC-P2-72）。
+// DetailPanel.tsx はこの結果を描画するだけにする。取得状態の遷移は lib/detailState.ts、
+// 「経路」の区分（推定）の文言は lib/estimateView.ts。
 import {
   aircraftAltitudeM,
   bearingDeg,
@@ -9,11 +10,13 @@ import {
   slantDistanceKm,
   type LatLon,
 } from "../../shared/geo.ts";
-import type { Airport, Flight, FlightDetailResponse } from "../../shared/types.ts";
+import type { Airport, AirportOps, Flight, FlightDetailResponse } from "../../shared/types.ts";
 import { detailBody, type DetailState } from "./detailState.ts";
+import { buildEstimateSection, ESTIMATE_ITEM_LABELS, ESTIMATE_SECTION_TITLE } from "./estimateView.ts";
 import type { Observer } from "./flightRows.ts";
 import {
   DASH,
+  DEFAULT_UNITS,
   finiteOrUndefined,
   formatAltitudeFt,
   formatBearing,
@@ -24,6 +27,7 @@ import {
   isFiniteNumber,
   nonEmpty,
   type MaybeNumber,
+  type Units,
 } from "./format.ts";
 import { typeDisplayName } from "./typeNames.ts";
 
@@ -60,12 +64,13 @@ export const ROUTE_PROGRESS_LABEL = "進み具合";
 /** 写真のクレジットの頭（撮影者名の無い写真は出さない。仕様 §13） */
 export const PHOTO_CREDIT_PREFIX = "写真: ";
 
-/** F-05 の区分（Phase 1 分） */
+/** F-05 の区分。「経路」（推定）は Phase 2 で末尾に足した（AC-P2-53。文言は lib/estimateView.ts） */
 export const DETAIL_SECTION_TITLES = {
   flight: "フライト",
   aircraft: "機体",
   state: "飛行状態",
   relation: "自分との関係",
+  estimate: ESTIMATE_SECTION_TITLE,
 } as const;
 
 /** 各区分の項目名 */
@@ -89,13 +94,22 @@ export const DETAIL_ITEM_LABELS = {
   slantDistance: "直線距離",
   bearing: "方角",
   elevation: "仰角",
+  ...ESTIMATE_ITEM_LABELS,
 } as const;
 
 // ---- 表示の型 ----
 
 export type DetailItem = { label: string; value: string };
 
-export type DetailSection = { title: string; items: DetailItem[] };
+/** 区分に添える補足の一覧（見出しと行）。「経路」の区分では「根拠」と `estimate.evidence` の各行 */
+export type DetailNotes = { label: string; lines: string[] };
+
+export type DetailSection = {
+  title: string;
+  items: DetailItem[];
+  /** 項目名の無い補足の行（「経路」の区分では `estimate.evidence` の各行）。無ければ省く */
+  notes?: DetailNotes;
+};
 
 export type DetailPhoto = {
   /** 表示する画像（`url` 優先、無ければ `thumbnailUrl`） */
@@ -255,8 +269,19 @@ function buildRoute(route: NonNullable<Flight["route"]>, current: LatLon): Detai
   };
 }
 
-/** 詳細パネルに出す内容（F-05 の区分。値の無い項目は「—」） */
-export function buildDetailView(detail: FlightDetailResponse, observer: Observer): DetailView {
+/**
+ * 詳細パネルに出す内容（F-05 の区分。値の無い項目は「—」）。
+ * `airportOps` は「経路」の区分の「運用方向」に使う（空港は決まったが運用方向が決まらないときは
+ * ヘッダーと同じ「判定中」、空港そのものが決まらないときは「—」。`estimateView.ts`）。
+ * `units` は高度・対地速度の表示の単位（省くと既定の m・km/h。AC-P2-72）。
+ * 昇降率は fpm（仕様 Q15。根拠の行と同じ単位）、距離は km で、どちらも単位の切り替えの対象外
+ */
+export function buildDetailView(
+  detail: FlightDetailResponse,
+  observer: Observer,
+  airportOps?: readonly AirportOps[],
+  units: Units = DEFAULT_UNITS,
+): DetailView {
   const { flight } = detail;
   const labels = DETAIL_ITEM_LABELS;
   const callsign = nonEmpty(flight.callsign);
@@ -288,12 +313,12 @@ export function buildDetailView(detail: FlightDetailResponse, observer: Observer
     {
       title: DETAIL_SECTION_TITLES.state,
       items: [
-        { label: labels.altitudeBaro, value: formatAltitudeFt(flight.position.altitudeBaroFt) },
-        { label: labels.altitudeGeom, value: formatAltitudeFt(flight.position.altitudeGeomFt) },
-        { label: labels.groundSpeed, value: formatSpeedKt(flight.groundSpeedKt) },
+        { label: labels.altitudeBaro, value: formatAltitudeFt(flight.position.altitudeBaroFt, units.altitude) },
+        { label: labels.altitudeGeom, value: formatAltitudeFt(flight.position.altitudeGeomFt, units.altitude) },
+        { label: labels.groundSpeed, value: formatSpeedKt(flight.groundSpeedKt, units.speed) },
         { label: labels.track, value: formatHeadingDeg(flight.trackDeg) },
         { label: labels.verticalRate, value: formatVerticalRateFpm(flight.verticalRateFpm) },
-        { label: labels.targetAltitude, value: formatAltitudeFt(flight.targetAltitudeFt) },
+        { label: labels.targetAltitude, value: formatAltitudeFt(flight.targetAltitudeFt, units.altitude) },
         { label: labels.squawk, value: nonEmpty(flight.squawk) ?? DASH },
       ],
     },
@@ -310,6 +335,12 @@ export function buildDetailView(detail: FlightDetailResponse, observer: Observer
       ],
     },
   ];
+
+  // 「経路」は推定のある機体だけ、区分の末尾に足す（AC-P2-53）
+  const estimateSection = buildEstimateSection(flight.estimate, airportOps);
+  if (estimateSection !== undefined) {
+    sections.push(estimateSection);
+  }
 
   return {
     title,
@@ -337,7 +368,12 @@ export type DetailPanelContent = {
  * 最後の結果があれば取り直し中もその結果を出す（404・失敗の案内も詳細も「詳細を取得しています…」に戻さない。取得中の案内は結果が無いときだけ）。
  * 詳細を出している間の取り直しでは何も添えず（ちらつかない）、最後の取得が失敗しているときだけ `notice` を添える
  */
-export function detailPanelContent(state: DetailState, observer: Observer): DetailPanelContent {
+export function detailPanelContent(
+  state: DetailState,
+  observer: Observer,
+  airportOps?: readonly AirportOps[],
+  units?: Units,
+): DetailPanelContent {
   const body = detailBody(state);
   switch (body.kind) {
     case "empty":
@@ -349,7 +385,7 @@ export function detailPanelContent(state: DetailState, observer: Observer): Deta
     case "error":
       return { title: DETAIL_PANEL_LABEL, message: DETAIL_ERROR_MESSAGE };
     case "view": {
-      const view = buildDetailView(body.detail, observer);
+      const view = buildDetailView(body.detail, observer, airportOps, units);
       return {
         title: view.title,
         ...(view.subtitle === undefined ? {} : { subtitle: view.subtitle }),

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { VERTICAL_RATE_THRESHOLD_FPM } from "../../shared/estimate.ts";
 import {
   airportShortLabel,
   DASH,
+  DEFAULT_UNITS,
   finiteOrUndefined,
   formatAltitudeFt,
   formatAltitudeM,
@@ -43,7 +45,7 @@ describe("formatAltitudeFt / formatAltitudeM（ft → m、10m 単位に丸めて
     expect(formatAltitudeM(meters)).toBe(expected);
   });
 
-  it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY])("%s → 「—」", (value) => {
+  it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("%s → 「—」", (value) => {
     expect(formatAltitudeFt(value)).toBe("—");
     expect(formatAltitudeM(value)).toBe("—");
   });
@@ -63,12 +65,86 @@ describe("formatSpeedKt（kt → km/h の整数）", () => {
     expect(formatSpeedKt(knots)).toBe(expected);
   });
 
-  it.each([null, undefined, Number.NaN])("%s → 「—」", (value) => {
+  it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("%s → 「—」", (value) => {
     expect(formatSpeedKt(value)).toBe("—");
   });
 
   it("-0 に丸まる負の小さな値は「0km/h」（-0.2kt = -0.37km/h）", () => {
     expect(formatSpeedKt(-0.2)).toBe("0km/h");
+  });
+});
+
+describe("表示の単位（F-09・仕様 Q6・AC-P2-72）", () => {
+  it("既定は m と km/h", () => {
+    expect(DEFAULT_UNITS).toEqual({ altitude: "m", speed: "kmh" });
+  });
+
+  // W9 MINOR-5: m → ft の換算口（`formatAltitudeM` の単位指定）は無くしたので、
+  // ft 表示の入口は受信値（ft）を受ける `formatAltitudeFt` だけ。`formatAltitudeM` は m 専用
+  describe("formatAltitudeFt: 単位 ft（10 単位に丸めて桁区切り。m と同じ流儀）", () => {
+    it.each([
+      [6600, "6,600ft"],
+      [21654, "21,650ft"], // 10ft 単位に丸める
+      [999, "1,000ft"],
+      [0, "0ft"],
+      [-10, "-10ft"],
+    ])("%s ft → %s", (feet, expected) => {
+      expect(formatAltitudeFt(feet, "ft")).toBe(expected);
+    });
+
+    it.each([
+      [36089, "36,090ft"], // 巡航 11,000m ≒ 36,089ft → 36,090
+      [875, "880ft"], // 25ft 刻みの受信値も m へ往復させずそのまま丸める
+    ])("受信値 %s ft はそのまま丸めて %s", (feet, expected) => {
+      expect(formatAltitudeFt(feet, "ft")).toBe(expected);
+    });
+
+    it("単位を省くと既定の m（明示した m と同じ）", () => {
+      expect(formatAltitudeM(2011.68)).toBe("2,010m");
+      expect(formatAltitudeFt(6600)).toBe(formatAltitudeFt(6600, "m"));
+      expect(formatAltitudeFt(6600)).toBe("2,010m");
+    });
+
+    it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("値が無ければ単位に関わらず「—」（%s）", (value) => {
+      expect(formatAltitudeFt(value, "ft")).toBe("—");
+      expect(formatAltitudeFt(value)).toBe("—");
+      expect(formatAltitudeM(value)).toBe("—");
+    });
+
+    it("-0 に丸まる負の小さな値は「0ft」（-4ft）", () => {
+      expect(formatAltitudeFt(-4, "ft")).toBe("0ft");
+    });
+  });
+
+  describe("formatSpeedKt: 単位 kt（km/h と同じく整数に丸める）", () => {
+    it.each([
+      [250, "250kt"],
+      [480.4, "480kt"], // 480.4 → 480
+      [0, "0kt"],
+    ])("%s kt → %s", (knots, expected) => {
+      expect(formatSpeedKt(knots, "kt")).toBe(expected);
+    });
+
+    it("単位を省くと既定の km/h（明示した kmh と同じ）", () => {
+      expect(formatSpeedKt(250)).toBe(formatSpeedKt(250, "kmh"));
+      expect(formatSpeedKt(250)).toBe("463km/h");
+    });
+
+    it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("値が無ければ単位に関わらず「—」（%s）", (value) => {
+      expect(formatSpeedKt(value, "kt")).toBe("—");
+    });
+
+    it("-0 に丸まる負の小さな値は「0kt」（-0.2kt）", () => {
+      expect(formatSpeedKt(-0.2, "kt")).toBe("0kt");
+    });
+  });
+
+  it("昇降率は単位の切り替えの対象外（AC-P3-20・仕様 Q15「昇降率の単位は fpm」。単位の引数を取らない）", () => {
+    expect(formatVerticalRateFpm(1000)).toBe("+1000fpm");
+  });
+
+  it("距離は単位の切り替えの対象外（km のまま。F-09 は高度と速度だけを挙げている）", () => {
+    expect(formatDistanceKm(12.4)).toBe("12km");
   });
 });
 
@@ -131,22 +207,36 @@ describe("formatTrend（記号と文字の両方）", () => {
   });
 });
 
-describe("formatVerticalRateFpm（fpm → m/分 の整数、正は + 付き）", () => {
+// 書式は根拠（evidence）の行（src/server/estimate/estimate.ts の verticalRateEvidence。
+// 「上昇中 +1500fpm」「降下中 -704fpm」「水平飛行 0fpm」）に合わせる（仕様 Q15・AC-P3-20/21）
+describe("formatVerticalRateFpm（fpm のまま整数、正は + 付き）", () => {
   it.each([
-    [1000, "+305m/分"], // 304.8 → 305
-    [-1000, "-305m/分"],
-    [-704, "-215m/分"], // -214.58 → -215
-    [0, "0m/分"],
+    [1500, "+1500fpm"], // evidence の「上昇中 +1500fpm」と同じ数字・同じ単位
+    [-704, "-704fpm"], // evidence の「降下中 -704fpm」と同じ
+    [0, "0fpm"], // evidence の「水平飛行 0fpm」と同じ
+    [-1000, "-1000fpm"],
+    // (0, 200] は evidence と符号の扱いが**意図的に**違う（サーバーは「水平飛行 150fpm」と符号を出さない）。
+    // 詳細の「昇降率」の行には向きを表す語が無く、+150 と -150 の見分けが符号だけに掛かっているため、
+    // クライアントは正なら必ず "+" を付ける。evidence に合わせて "+" を落とさないこと
+    [150, "+150fpm"],
+    [VERTICAL_RATE_THRESHOLD_FPM, "+200fpm"], // しきい値ちょうど（evidence は「水平飛行 200fpm」）
+    [-150, "-150fpm"],
+    [1000.4, "+1000fpm"], // 丸めは evidence と同じ Math.round
+    [-704.5, "-704fpm"], // Math.round は .5 を +∞ 方向へ。evidence も同じ関数なので数字がずれない
   ])("%s fpm → %s", (fpm, expected) => {
     expect(formatVerticalRateFpm(fpm)).toBe(expected);
   });
 
-  it.each([null, undefined, Number.NaN])("%s → 「—」", (value) => {
+  it("桁区切りはしない（evidence の「+1500fpm」に揃える。高度の「1,500ft」とは別の流儀）", () => {
+    expect(formatVerticalRateFpm(2400)).toBe("+2400fpm");
+  });
+
+  it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])("%s → 「—」", (value) => {
     expect(formatVerticalRateFpm(value)).toBe("—");
   });
 
-  it("-0 に丸まる負の小さな値は「0m/分」（-1fpm = -0.3048m/分）", () => {
-    expect(formatVerticalRateFpm(-1)).toBe("0m/分");
+  it("-0 に丸まる負の小さな値は「0fpm」（-0.4fpm）", () => {
+    expect(formatVerticalRateFpm(-0.4)).toBe("0fpm");
   });
 });
 

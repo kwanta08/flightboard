@@ -100,8 +100,15 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+// `airportOps` もヘッダーの運用方向（AC-P2-52）で読むので、契約どおり配列であることを確かめる
+// （型だけ合っていて実体が無い状態にしない）
 function isNearbyResponse(body: unknown): body is NearbyResponse {
-  return isObject(body) && typeof body.updatedAt === "string" && Array.isArray(body.flights);
+  return (
+    isObject(body) &&
+    typeof body.updatedAt === "string" &&
+    Array.isArray(body.flights) &&
+    Array.isArray(body.airportOps)
+  );
 }
 
 function isFlightDetailResponse(body: unknown): body is FlightDetailResponse {
