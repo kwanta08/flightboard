@@ -55,6 +55,25 @@ export function destinationPoint(from: LatLon, bearingDeg: number, distanceKm: n
   return { lat: phi * RAD_TO_DEG, lon: normalizeDeg(lon + 180) - 180 };
 }
 
+/**
+ * from → to の大円に対する point の横ずれ（km）。符号は持たせず絶対値で返す。
+ * `dxt = |asin( sin δ₁₃ · sin(θ₁₃ − θ₁₂) )| · R`（δ₁₃ = from → point の角距離、θ₁₃ / θ₁₂ = from から見た方位）。
+ *
+ * 測るのは**線分ではなく大円**なので、from と to の外側へ延ばした延長線上の点も 0km になる
+ * （滑走路の中心線からのずれを、進入側でも出発側でも同じ式で測るため）。
+ * from と to が同じ点のときは大円が定まらないので、**point からその点までの距離**を返す
+ * （0 を返すと「中心線に乗っている」と読めてしまうので、遠い側＝判別しない側に倒す）。
+ */
+export function crossTrackKm(point: LatLon, from: LatLon, to: LatLon): number {
+  if (from.lat === to.lat && from.lon === to.lon) {
+    return haversineKm(point, from);
+  }
+  const delta13 = haversineKm(from, point) / EARTH_RADIUS_KM;
+  const theta13 = bearingDeg(from, point) * DEG_TO_RAD;
+  const theta12 = bearingDeg(from, to) * DEG_TO_RAD;
+  return Math.abs(Math.asin(Math.sin(delta13) * Math.sin(theta13 - theta12))) * EARTH_RADIUS_KM;
+}
+
 export const JA_16_DIRECTIONS = [
   "北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東",
   "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西",

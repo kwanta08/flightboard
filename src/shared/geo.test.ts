@@ -7,6 +7,7 @@ import {
   aircraftAltitudeM,
   bearingDeg,
   bearingToJa16,
+  crossTrackKm,
   destinationPoint,
   elevationAngleDeg,
   haversineKm,
@@ -117,6 +118,108 @@ describe("destinationPoint", () => {
     const back = destinationPoint(to, bearingDeg(to, from), 10);
     expect(back.lat).toBeCloseTo(from.lat, 9);
     expect(back.lon).toBeCloseTo(from.lon, 9);
+  });
+});
+
+describe("crossTrackKm", () => {
+  const from = { lat: 35.5, lon: 139.7 };
+  const to = { lat: 35.8, lon: 140.1 };
+  const legKm = haversineKm(from, to);
+
+  /** from → to の大円上で、from から distanceKm 進んだ点（負なら from の手前側） */
+  function alongTrack(distanceKm: number) {
+    const course = bearingDeg(from, to);
+    return distanceKm < 0
+      ? destinationPoint(from, course + 180, -distanceKm)
+      : destinationPoint(from, course, distanceKm);
+  }
+
+  it("中点から直角に 1km 離れた点は 1.0km（左右どちらへずれても同じ）", () => {
+    const mid = alongTrack(legKm / 2);
+    const course = bearingDeg(mid, to);
+    expect(crossTrackKm(destinationPoint(mid, course + 90, 1), from, to)).toBeCloseTo(1, 6);
+    expect(crossTrackKm(destinationPoint(mid, course - 90, 1), from, to)).toBeCloseTo(1, 6);
+  });
+
+  it.each([0.1, 0.3, 1, 5, 20])("直角に %skm 離れた点は、そのまま横ずれになる", (offsetKm) => {
+    const mid = alongTrack(legKm / 2);
+    const off = destinationPoint(mid, bearingDeg(mid, to) + 90, offsetKm);
+    expect(crossTrackKm(off, from, to)).toBeCloseTo(offsetKm, 6);
+  });
+
+  it("中心線に平行にずれた点は、どの位置でも同じ横ずれ（大円上の各点から直角に 1km）", () => {
+    for (const alongKm of [-10, 0, legKm / 4, legKm, legKm + 15]) {
+      const base = alongTrack(alongKm);
+      // 直角は「その位置での大円の向き」から測る（大円の向きは進むにつれて変わる）
+      const course = bearingDeg(base, alongTrack(alongKm + 1));
+      const off = destinationPoint(base, course + 90, 1);
+      expect(crossTrackKm(off, from, to)).toBeCloseTo(1, 6);
+    }
+  });
+
+  it("大円上の点は 0km（from そのもの・to そのもの・中間・両側の延長線上）", () => {
+    expect(crossTrackKm(from, from, to)).toBeCloseTo(0, 9);
+    expect(crossTrackKm(to, from, to)).toBeCloseTo(0, 9);
+    expect(crossTrackKm(alongTrack(legKm / 2), from, to)).toBeCloseTo(0, 9);
+    expect(crossTrackKm(alongTrack(legKm + 25), from, to)).toBeCloseTo(0, 9);
+    expect(crossTrackKm(alongTrack(-25), from, to)).toBeCloseTo(0, 9);
+  });
+
+  it("from と to が同じ点なら、その点までの距離を返す", () => {
+    // 大円が定まらないので「定まる唯一の量」を返す。0 を返すと「中心線に乗っている」と
+    // 読めてしまい、横ずれが最小の端として誤って選ばれうるので、遠い側＝判別しない側に倒す。
+    const point = { lat: 35.6, lon: 139.9 };
+    expect(crossTrackKm(point, from, { ...from })).toBeCloseTo(haversineKm(point, from), 9);
+    expect(crossTrackKm(point, from, { ...from })).toBeGreaterThan(10);
+    expect(crossTrackKm(from, from, { ...from })).toBe(0);
+  });
+
+  it("日付変更線をまたぐ大円でも測れる", () => {
+    const west = { lat: 0, lon: 179 };
+    const east = { lat: 0, lon: -179 };
+    const mid = destinationPoint(west, bearingDeg(west, east), haversineKm(west, east) / 2);
+    expect(Math.abs(mid.lon)).toBeCloseTo(180, 6);
+    expect(crossTrackKm(mid, west, east)).toBeCloseTo(0, 6);
+    expect(crossTrackKm(destinationPoint(mid, 0, 2), west, east)).toBeCloseTo(2, 6);
+    expect(crossTrackKm(destinationPoint(mid, 180, 2), west, east)).toBeCloseTo(2, 6);
+  });
+
+  it("日付変更線の東西にまたがる点でも、経度の表し方に依らない", () => {
+    const west = { lat: 60, lon: 179.5 };
+    const east = { lat: 61, lon: -179.5 };
+    const off = destinationPoint(west, bearingDeg(west, east) + 90, 3);
+    expect(crossTrackKm(off, west, east)).toBeCloseTo(3, 6);
+    expect(crossTrackKm({ lat: off.lat, lon: off.lon + 360 }, west, east)).toBeCloseTo(3, 6);
+  });
+
+  it("from と to を入れ替えても同じ値（符号を持たないため）", () => {
+    const mid = alongTrack(legKm / 2);
+    const points = [
+      destinationPoint(mid, bearingDeg(mid, to) + 90, 1.5),
+      destinationPoint(mid, bearingDeg(mid, to) - 90, 1.5),
+      destinationPoint(alongTrack(legKm + 30), bearingDeg(from, to) + 90, 0.4),
+      alongTrack(legKm / 3),
+      { lat: 35.8709, lon: 139.9256 },
+    ];
+    for (const point of points) {
+      expect(crossTrackKm(point, from, to)).toBeCloseTo(crossTrackKm(point, to, from), 9);
+    }
+  });
+
+  // 羽田の並行滑走路（16L/16R）。src/server/data/runways.ts の RUNWAY_ENDS の座標を書き写したもの
+  // （src/shared から src/server は import しない）。対向端は 16L → 34R、16R → 34L。
+  const RJTT_16L = { lat: 35.565897, lon: 139.78655 };
+  const RJTT_34R = { lat: 35.53969, lon: 139.805142 };
+  const RJTT_16R = { lat: 35.560452, lon: 139.768734 };
+  const RJTT_34L = { lat: 35.536591, lon: 139.785672 };
+
+  it("既知の値: 羽田 16L の延長線上の点は、16R の中心線から 1.70km（距離によらずほぼ一定）", () => {
+    const runwayBearing = bearingDeg(RJTT_16L, RJTT_34R);
+    for (const distanceKm of [5, 10, 20, 30]) {
+      const onFinal = destinationPoint(RJTT_16L, runwayBearing + 180, distanceKm);
+      expect(crossTrackKm(onFinal, RJTT_16L, RJTT_34R)).toBeCloseTo(0, 6);
+      expect(crossTrackKm(onFinal, RJTT_16R, RJTT_34L)).toBeCloseTo(1.7, 2);
+    }
   });
 });
 
