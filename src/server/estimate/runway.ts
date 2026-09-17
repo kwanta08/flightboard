@@ -204,6 +204,7 @@ function measureEnd(search: RunwaySearch, end: RunwayEnd, bearing: number): Runw
  * 出発の基準点（AC-P3-05）: 航跡の中で、**組の滑走路の端**（組の各端 ∪ それぞれの対向端）までの
  * 距離の最小値がいちばん小さい点。出発機の航跡は空港から遠ざかる一方なので、実質「最初の空中の位置通報」を選ぶ。
  * 航跡が無い／空、またはその距離が DEPARTURE_TRACK_MAX_KM より遠ければ undefined（＝決めない）。
+ * その距離が同じ点が複数あるときは、**先に現れた（古い）点**を採る。
  */
 function departureReferencePoint(
   track: readonly LatLon[] | undefined,
@@ -238,6 +239,7 @@ type SideDecision = { end: RunwayEnd; runwayBearingDeg: number; crossTrackKm: nu
  * 組の中の L/C/R（AC-P3-04〜06）。決められなければ undefined。
  * 基準点は進入なら**現在位置**、出発なら**航跡の基準点**で、その点の中心線（自端 → 対向端）からの
  * 横ずれが最小の端を採る。次点との差が RUNWAY_SIDE_MARGIN_KM 未満なら決めない。
+ * **中心線を引けた端（対向端が ends にある端）が 2 つ未満のときも決めない**（差を検査できないため）。
  */
 function decideSide(
   search: RunwaySearch,
@@ -262,17 +264,20 @@ function decideSide(
       crossTrackKm: crossTrackKm(reference, end, opposite),
     });
   }
-  measured.sort((a, b) => a.crossTrackKm - b.crossTrackKm);
-  const closest = measured[0];
-  if (!closest) {
+  // 横ずれを測れた端が 2 つ未満なら決めない。1 つだけで決めると AC-P3-06 の「次点との差」を
+  // 検査しないまま「決めた」ことになり、中心線から 0.8km 離れていても L/R を名乗ってしまう
+  // （組の端は 2 つ以上あるのに、対向端が ends に無くて中心線が引けない端があるときに起こる）
+  if (measured.length < 2) {
     return undefined;
   }
+  measured.sort((a, b) => a.crossTrackKm - b.crossTrackKm);
+  const closest = measured[0]!;
+  const runnerUp = measured[1]!;
   // 出発の基準点は中心線に乗っていること（別の滑走路から出た機体・大きく外れた点を弾く）
   if (search.phase === "departure" && closest.crossTrackKm > DEPARTURE_TRACK_MAX_XTK_KM) {
     return undefined;
   }
-  const runnerUp = measured[1];
-  if (runnerUp && runnerUp.crossTrackKm - closest.crossTrackKm < RUNWAY_SIDE_MARGIN_KM) {
+  if (runnerUp.crossTrackKm - closest.crossTrackKm < RUNWAY_SIDE_MARGIN_KM) {
     return undefined;
   }
   return closest;

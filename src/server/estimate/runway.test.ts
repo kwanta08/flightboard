@@ -380,6 +380,10 @@ describe("AC-P3-12: 並行滑走路でも正しい端が選ばれる（端ごと
     // 確度は中止まり（plan v5 AC-P3-07。組の端が 2 つ以上なら決めても上限を掛ける）
     expect(selection?.capConfidence).toBe(true);
     expect(selection?.sideEvidence).toBe("中心線から 0.0km");
+
+    // 進入は**現在位置**の横ずれだけで決める（AC-P3-04）。
+    // 隣の端を指す航跡（隣の端の対向端の先 1km ＝隣の中心線上）を渡しても結果は変わらない
+    expect(arrivalSelection(aircraft, [departureTrackPoint(neighbour, { alongKm: 1 })])).toEqual(selection);
   });
 
   it("出発: RJTT 34R の延長線上 5km は、航跡があれば 34R が選ばれる（採点の先頭は 34L のまま）", () => {
@@ -539,6 +543,34 @@ describe("AC-P3-04: 進入の L/R は現在位置の横ずれで決める", () =
     expect(selection?.sideEvidence).toBe("L/R は判別できず");
   });
 
+  it("中心線を引けた端が 1 つしか無ければ決めない（差を検査できないため）", () => {
+    // 対向端が ends に無い端は中心線が引けず判別に使えない。組の端が 2 つあっても、
+    // 測れた端が 1 つだけのまま「決めた」にすると AC-P3-06 の差の検査を素通りしてしまう
+    // （中心線から 0.8km も離れているのに L/R を名乗る）。RJTT 34R を抜くと 16L の中心線が引けなくなる
+    const ends = RUNWAY_ENDS.filter((end) => !(end.icao === "RJTT" && end.ident === "34R"));
+    const end = endOf("RJTT", "16L");
+    const neighbourEnd = endOf("RJTT", "16R");
+    const bearing = trueBearingOf(end);
+    const onFinal = destinationPoint(end, bearing + 180, 10);
+    const separationKm = crossTrackKm(onFinal, neighbourEnd, oppositeOf(neighbourEnd));
+    const position = destinationPoint(onFinal, bearing + 90, separationKm / 2);
+    // 機体は 2 本の中心線のちょうど真ん中（どちらからも約 0.85km）にいる
+    expect(crossTrackKm(position, neighbourEnd, oppositeOf(neighbourEnd))).toBeCloseTo(separationKm / 2, 2);
+
+    const selection = selectRunway(
+      { position, trackDeg: normalizeDeg(bearing), verticalRateFpm: DESCENDING_FPM, phase: "arrival" },
+      ends,
+    );
+    expect(identsOf(runwayCandidates(
+      { position, trackDeg: normalizeDeg(bearing), verticalRateFpm: DESCENDING_FPM, phase: "arrival" },
+      ends,
+    ))).toEqual(["16R"]);
+    expect(selection?.runway).toBe("16");
+    expect(selection?.decided).toBe(false);
+    expect(selection?.capConfidence).toBe(true);
+    expect(selection?.sideEvidence).toBe("L/R は判別できず");
+  });
+
   it.each([
     { icao: "RJTT", ident: "16L", neighbour: "16R", towardNeighbour: -1 },
     { icao: "RJTT", ident: "34L", neighbour: "34R", towardNeighbour: -1 },
@@ -631,6 +663,9 @@ describe("AC-P3-05: 出発の L/R は航跡の基準点の横ずれで決める"
     ["16L", "16"],
     ["34R", "34"],
   ])("羽田: 対向端の先 3.5km（3.0km 超え）の基準点では数字だけ（%s → %s）", (ident, number) => {
+    // 境界（3.0km ちょうど）は合成では作れない（destinationPoint と haversineKm の往復で
+    // 3.0000000000020km になる）ので、内側 2.5km・外側 3.5km で挟む。
+    // 「**より遠い**なら決めない」（`>`）の向きは DEPARTURE_TRACK_MAX_KM の JSDoc と AC-P3-05 の文言で縛る
     const end = endOf("RJTT", ident);
     const reference = departureTrackPoint(end, { alongKm: 3.5 });
     expect(nearestRunwayEndKm(reference, "RJTT")).toBeGreaterThan(DEPARTURE_TRACK_MAX_KM);
@@ -658,6 +693,8 @@ describe("AC-P3-05: 出発の L/R は航跡の基準点の横ずれで決める"
     { offsetKm: 0.4, runway: "16", decided: false },
     { offsetKm: -0.4, runway: "16", decided: false },
   ])("基準点が中心線から $offsetKm km ずれていると $runway（上限 0.3km）", ({ offsetKm, runway, decided }) => {
+    // 境界（0.3km ちょうど）は合成では作れないので内側 0.2km・外側 0.4km で挟む。
+    // 「**より大きい**なら決めない」（`>`）の向きは DEPARTURE_TRACK_MAX_XTK_KM の JSDoc と AC-P3-05 の文言で縛る
     const end = endOf("RJTT", "16L");
     const reference = departureTrackPoint(end, { alongKm: 0, offsetKm });
     expect(crossTrackKm(reference, end, oppositeOf(end))).toBeCloseTo(Math.abs(offsetKm), 2);
@@ -686,7 +723,9 @@ describe("AC-P3-06 / 10: 決めないときは数字だけを返し、値は組�
     { label: "差 0.2km", overshootKm: -0.05, decided: false },
   ])("横ずれの差が $label なら decided = $decided（境界は 0.3km）", ({ overshootKm, decided }) => {
     // 16L の中心線から「実分離の半分 − (0.3/2 ± 0.05)km」だけ 16R 側へずらすと、
-    // 2 本の中心線への横ずれの差がちょうど 0.3km ± 0.1km になる
+    // 2 本の中心線への横ずれの差がちょうど 0.3km ± 0.1km になる。
+    // 境界（差 0.3km ちょうど）は合成では作れないので内側・外側 0.1km で挟む。
+    // 「差が**未満**なら決めない」（`<`）の向きは RUNWAY_SIDE_MARGIN_KM の JSDoc と AC-P3-06 の文言で縛る
     const end = endOf("RJTT", "16L");
     const neighbourEnd = endOf("RJTT", "16R");
     const bearing = trueBearingOf(end);
@@ -803,8 +842,19 @@ describe("既知の妥協: 並行滑走路の誤判別帯（現在の挙動の�
     expect(selection?.decided).toBe(false);
   });
 
+  it("進入: 10km・横 1.0km は帯の**境界**（差 0.3007km ＝マージン 0.3km に対し余裕 0.7m）", () => {
+    // 同じ横 1.0km でも 20km では差 0.2997km、30km では 0.2988km で「決めない」側に落ちる。
+    // 座標を再生成して数 m 動けばこの点も落ちるので、`16R` を固定せず「どちらでもよい」にしておく
+    // （帯そのものの主張は、余裕のある横 1.2 / 1.74km の行が担う）
+    const end = endOf("RJTT", "16L");
+    const bearing = trueBearingOf(end);
+    const position = destinationPoint(destinationPoint(end, bearing + 180, 10), bearing + 90, 1.0);
+    const selection = arrivalSelection({ position, trackDeg: normalizeDeg(bearing) });
+    expect(["16", "16R"]).toContain(selection?.runway);
+    expect(selection?.capConfidence).toBe(true);
+  });
+
   it.each([
-    { distanceKm: 10, offsetKm: 1.0 },
     { distanceKm: 10, offsetKm: 1.2 },
     { distanceKm: 20, offsetKm: 1.2 },
     { distanceKm: 30, offsetKm: 1.2 },
