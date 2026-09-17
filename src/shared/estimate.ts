@@ -27,7 +27,11 @@ export const VERTICAL_RATE_THRESHOLD_FPM = 200;
  * 語が無く値の符号だけが向きを伝えるので正なら必ず "+" を出す。
  * 丸め・-0・接尾辞・桁区切りをしないことを 1 箇所にまとめるのは、
  * 詳細パネルで根拠の「降下中 -704fpm」と昇降率の「-704fpm」が**同じ数字になることを構成で保証する**ため
- * （しきい値を `VERTICAL_RATE_THRESHOLD_FPM` に 1 箇所化したのと同じ理由。仕様 Q15）
+ * （しきい値を `VERTICAL_RATE_THRESHOLD_FPM` に 1 箇所化したのと同じ理由。仕様 Q15）。
+ *
+ * **有限値だけを渡すこと**（非有限値は弾かずに `Infinityfpm` / `NaNfpm` を返す）。
+ * 絞るのは呼び出し側の仕事: サーバーは `estimate.ts` の `finiteOrUndefined`（非有限なら evidence の行自体を出さない）、
+ * クライアントは `format.ts` の `isFiniteNumber`（非有限なら「—」）でガードしている
  */
 export function formatFpm(fpm: number): string {
   const rounded = Math.round(fpm);

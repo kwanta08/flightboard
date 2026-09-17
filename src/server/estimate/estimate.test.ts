@@ -230,6 +230,21 @@ describe("生成規則: 進入・出発だが滑走路が決まらない", () =>
     expect(estimate?.confidence).toBe(0.5);
     expect(estimate?.evidence).toEqual(["羽田まで 40.0km", "降下中 -704fpm", "adsbdb: 羽田 着"]);
   });
+
+  // 全体差分レビュー（3 周目）MINOR-2: 書式の共有関数 `formatFpm`（src/shared/estimate.ts）は
+  // 非有限値を弾かず `NaNfpm` / `Infinityfpm` を返す契約なので、**絞るのは呼び出し側**。
+  // ここはサーバー側のガード（`finiteOrUndefined`）が効いていること＝ evidence に fpm の行自体が出ないことを固定する
+  // （クライアント側のガードは format.test.ts の「null / undefined / NaN / ±Infinity → 「—」」が固定している）
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "昇降率が非有限（%s）なら昇降の行を出さない（NaNfpm / Infinityfpm を根拠に出さない）",
+    (verticalRateFpm) => {
+      const estimate = buildEstimate(
+        flight({ ...far, verticalRateFpm, route: { origin: "RJOO", destination: "RJTT" } }),
+      );
+      expect(estimate?.evidence).toEqual(["羽田まで 40.0km", "adsbdb: 羽田 着"]);
+      expect(estimate?.evidence.some((line) => line.includes("fpm"))).toBe(false);
+    },
+  );
 });
 
 describe("生成規則: 通過（enroute）", () => {

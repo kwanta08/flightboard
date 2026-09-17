@@ -133,7 +133,7 @@ describe("buildDetailView: 全項目が揃った詳細の値", () => {
     expect(valueOf(view, "飛行状態", "対地速度")).toBe("463km/h");
     // 123° は [112.5, 135) → 東南東
     expect(valueOf(view, "飛行状態", "進行方向")).toBe("123°（東南東）");
-    // 昇降率は換算せず fpm のまま（仕様 Q15。根拠の行と同じ単位）
+    // 昇降率は換算せず fpm のまま（AC-P3-20。仕様 Q15 の改訂で m/分 から変わった。根拠の行と同じ単位）
     expect(valueOf(view, "飛行状態", "昇降率")).toBe("+1000fpm");
     expect(valueOf(view, "飛行状態", "目標高度")).toBe("1,520m");
     expect(valueOf(view, "飛行状態", "スコーク")).toBe("2071");
@@ -207,7 +207,7 @@ describe("buildDetailView: 表示の単位（F-09・AC-P2-72）", () => {
     expect(valueOf(view, "飛行状態", "対地速度")).toBe("250kt");
   });
 
-  it("昇降率は fpm のまま（仕様 Q15。切り替えるのは高度と対地速度だけ）", () => {
+  it("昇降率は fpm のまま（AC-P3-20・仕様 Q15。切り替えるのは高度と対地速度だけ）", () => {
     expect(valueOf(view, "飛行状態", "昇降率")).toBe("+1000fpm");
   });
 
